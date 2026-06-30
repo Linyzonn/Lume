@@ -149,6 +149,17 @@ final class LibraryStore: ObservableObject {
             }
         }
 
+        // Heuristique pour les fichiers YouTube : le tag artiste est souvent absent,
+        // mais le titre est au format "ARTISTE - TITRE". On separe alors les deux.
+        if artist == "Artiste inconnu", let range = title.range(of: " - ") {
+            let left = String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let right = String(title[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if !left.isEmpty, !right.isEmpty {
+                artist = left
+                title = right
+            }
+        }
+
         return Track(fileName: storedName,
                      title: title,
                      artist: artist,

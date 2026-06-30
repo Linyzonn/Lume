@@ -12,6 +12,12 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
     @State private var showEQ = false
 
+    // Glisser vers le bas pour fermer.
+    @State private var dragOffset: CGFloat = 0
+    // Couleurs d'ambiance derivees de la pochette (fond plein ecran).
+    @State private var bgTop: Color = Color(red: 0.13, green: 0.13, blue: 0.17)
+    @State private var bgBottom: Color = .black
+
     var body: some View {
         ZStack {
             backgroundGradient
@@ -28,34 +34,68 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 28)
             .padding(.bottom, 28)
+            .environment(\.colorScheme, .dark)   // texte clair, lisible sur fond colore
+            .offset(y: dragOffset)
+            // Glissement vers le bas : on attache le geste au haut de l'ecran
+            // (poignee + pochette + infos), sans gener le curseur ni les boutons.
+            .simultaneousGesture(dismissDrag)
         }
+        .animation(.interactiveSpring(response: 0.35, dampingFraction: 0.85), value: dragOffset)
+        .task(id: engine.currentTrack?.id) { updateAmbiance() }
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showLyrics) { LyricsView() }
         .sheet(isPresented: $showEQ) { EqualizerView() }
+    }
+
+    // MARK: - Geste de fermeture
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                // On ne reagit qu'au glissement vers le bas.
+                if value.translation.height > 0 {
+                    dragOffset = value.translation.height
+                }
+            }
+            .onEnded { value in
+                if value.translation.height > 120 {
+                    isPresented = false
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        dragOffset = 0
+                    }
+                }
+            }
     }
 
     // MARK: - Composants
 
     private var backgroundGradient: some View {
         ZStack {
+            // Degrade plein ecran derive de la pochette.
+            LinearGradient(colors: [bgTop, bgBottom],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            // Pochette floutee, subtile, pour la matiere (sans voile gris).
             if let track = engine.currentTrack, let img = library.artworkImage(for: track) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .blur(radius: 60)
-                    .opacity(0.55)
+                    .blur(radius: 90)
+                    .opacity(0.35)
                     .ignoresSafeArea()
             }
-            LinearGradient(colors: [LumeTheme.accent.opacity(0.35), .black.opacity(0.55)],
-                           startPoint: .top, endPoint: .bottom)
+            // Leger voile sombre en bas pour la lisibilite des controles.
+            LinearGradient(colors: [.clear, .black.opacity(0.45)],
+                           startPoint: .center, endPoint: .bottom)
                 .ignoresSafeArea()
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
         }
+        .animation(.easeInOut(duration: 0.6), value: bgTop)
     }
 
     private var grabber: some View {
         HStack {
-            Capsule().fill(.secondary).frame(width: 40, height: 5)
+            Capsule().fill(.white.opacity(0.5)).frame(width: 40, height: 5)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
@@ -64,7 +104,7 @@ struct NowPlayingView: View {
             Button { isPresented = false } label: {
                 Image(systemName: "chevron.down")
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.85))
             }
         }
         .onTapGesture { isPresented = false }
@@ -86,13 +126,18 @@ struct NowPlayingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(engine.currentTrack?.title ?? "—")
                     .font(.title2.weight(.bold))
-                    .lineLimit(1)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(engine.currentTrack?.artist ?? "")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
-            Spacer()
+            Spacer(minLength: 8)
             if let track = engine.currentTrack {
                 FavoriteButton(track: track).font(.title2)
             }
@@ -109,7 +154,7 @@ struct NowPlayingView: View {
                 isScrubbing = editing
                 if !editing { engine.seek(to: scrubValue) }
             })
-            .tint(LumeTheme.accent)
+            .tint(.white)
 
             HStack {
                 Text((isScrubbing ? scrubValue : engine.currentTime).asTimeString)
@@ -117,7 +162,7 @@ struct NowPlayingView: View {
                 Text(engine.duration.asTimeString)
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.7))
         }
         .padding(.bottom, 12)
     }
@@ -126,7 +171,7 @@ struct NowPlayingView: View {
         HStack(spacing: 36) {
             Button { engine.shuffleEnabled.toggle() } label: {
                 Image(systemName: "shuffle")
-                    .foregroundStyle(engine.shuffleEnabled ? LumeTheme.accent : .secondary)
+                    .foregroundStyle(engine.shuffleEnabled ? LumeTheme.accent : .white.opacity(0.7))
             }
             .font(.title3)
 
@@ -147,11 +192,11 @@ struct NowPlayingView: View {
 
             Button { cycleRepeat() } label: {
                 Image(systemName: engine.repeatMode == .one ? "repeat.1" : "repeat")
-                    .foregroundStyle(engine.repeatMode == .off ? .secondary : LumeTheme.accent)
+                    .foregroundStyle(engine.repeatMode == .off ? .white.opacity(0.7) : LumeTheme.accent)
             }
             .font(.title3)
         }
-        .foregroundStyle(.primary)
+        .foregroundStyle(.white)
         .padding(.vertical, 8)
     }
 
@@ -173,7 +218,7 @@ struct NowPlayingView: View {
                 }
             }
             .font(.title3)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.8))
         }
     }
 
@@ -184,6 +229,24 @@ struct NowPlayingView: View {
         case .one: engine.repeatMode = .off
         }
     }
+
+    // MARK: - Ambiance (couleurs derivees de la pochette)
+
+    private func updateAmbiance() {
+        guard let track = engine.currentTrack,
+              let img = library.artworkImage(for: track) else {
+            withAnimation(.easeInOut(duration: 0.6)) {
+                bgTop = Color(red: 0.13, green: 0.13, blue: 0.17)
+                bgBottom = .black
+            }
+            return
+        }
+        let colors = img.ambianceColors()
+        withAnimation(.easeInOut(duration: 0.6)) {
+            bgTop = Color(colors.top)
+            bgBottom = Color(colors.bottom)
+        }
+    }
 }
 
 // Curseur de volume systeme (enveloppe MPVolumeView).
@@ -191,8 +254,59 @@ struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
         let v = MPVolumeView(frame: .zero)
         v.showsRouteButton = true
-        v.tintColor = UIColor(LumeTheme.accent)
+        v.tintColor = .white
         return v
     }
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+}
+
+// MARK: - Extraction des couleurs d'ambiance depuis la pochette
+
+extension UIImage {
+    // Deux couleurs (haut / bas) tirees de la pochette, assombries pour rester
+    // lisibles sous du texte blanc.
+    func ambianceColors() -> (top: UIColor, bottom: UIColor) {
+        let top = averageColor(upperHalf: true)?.ambianceAdjusted(maxBrightness: 0.55) ?? UIColor(white: 0.18, alpha: 1)
+        let bottom = averageColor(upperHalf: false)?.ambianceAdjusted(maxBrightness: 0.28) ?? .black
+        return (top, bottom)
+    }
+
+    private func averageColor(upperHalf: Bool) -> UIColor? {
+        guard let ci = CIImage(image: self) else { return nil }
+        let e = ci.extent
+        // Repere CoreImage : origine en bas a gauche -> la moitie "haute" de l'image
+        // correspond a la partie superieure en Y.
+        let rect = upperHalf
+            ? CGRect(x: e.minX, y: e.midY, width: e.width, height: e.height / 2)
+            : CGRect(x: e.minX, y: e.minY, width: e.width, height: e.height / 2)
+        guard let f = CIFilter(name: "CIAreaAverage",
+                               parameters: [kCIInputImageKey: ci,
+                                            kCIInputExtentKey: CIVector(cgRect: rect)]),
+              let out = f.outputImage else { return nil }
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = CIContext(options: [.workingColorSpace: NSNull()])
+        ctx.render(out, toBitmap: &px, rowBytes: 4,
+                   bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                   format: .RGBA8, colorSpace: nil)
+        return UIColor(red: CGFloat(px[0]) / 255, green: CGFloat(px[1]) / 255,
+                       blue: CGFloat(px[2]) / 255, alpha: 1)
+    }
+}
+
+extension UIColor {
+    // Plafonne la luminosite (assombrit les pochettes claires) et rehausse un peu la
+    // saturation pour une ambiance plus marquee.
+    func ambianceAdjusted(maxBrightness: CGFloat) -> UIColor {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard getHue(&h, saturation: &s, brightness: &b, alpha: &a) else {
+            // Couleur non convertible (gris) : on renvoie un gris sombre.
+            var w: CGFloat = 0
+            getWhite(&w, alpha: &a)
+            return UIColor(white: min(w, maxBrightness), alpha: 1)
+        }
+        return UIColor(hue: h,
+                       saturation: min(1, s * 1.2 + 0.05),
+                       brightness: min(b, maxBrightness),
+                       alpha: 1)
+    }
 }
