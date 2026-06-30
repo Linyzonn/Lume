@@ -107,6 +107,13 @@ final class PlayerEngine: ObservableObject {
     private let engine = AVAudioEngine()
     private let players = [AVAudioPlayerNode(), AVAudioPlayerNode()]
     private let eqs = [AVAudioUnitEQ(numberOfBands: 10), AVAudioUnitEQ(numberOfBands: 10)]
+    // Un mixeur dedie par lecteur : il "absorbe" le format du fichier (qui peut
+    // varier d'un morceau a l'autre) et ressort TOUJOURS au format fixe `mixFormat`.
+    // Ainsi, charger un nouveau morceau ne reconfigure jamais le mixeur partage ni
+    // la sortie -> plus de crash AVAudioEngine sur iOS 16+.
+    private let playerMixers = [AVAudioMixerNode(), AVAudioMixerNode()]
+    // Format de travail commun a tout l'etage partage (la sortie convertira si besoin).
+    private let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
     private let subMixer = AVAudioMixerNode()                 // somme les deux lecteurs
     private let bassBoost = AVAudioUnitEQ(numberOfBands: 1)   // filtre low-shelf
     private let reverb = AVAudioUnitReverb()                  // ambiance / concert
@@ -115,6 +122,7 @@ final class PlayerEngine: ObservableObject {
     private var generations: [Int] = [0, 0]
     private var activeIndex = 0
     private var isCrossfading = false
+    private var consecutiveLoadFailures = 0
 
     private var ticker: Timer?
     private var fadeTimer: Timer?
@@ -147,15 +155,19 @@ final class PlayerEngine: ObservableObject {
         for i in 0..<2 {
             engine.attach(players[i])
             engine.attach(eqs[i])
+            engine.attach(playerMixers[i])
             configureEQ(eqs[i])
-            // Chaque lecteur : player -> egaliseur -> sous-mixeur commun.
-            engine.connect(players[i], to: eqs[i], format: nil)
-            engine.connect(eqs[i], to: subMixer, format: nil)
+            // Chaque lecteur : player -> egaliseur -> mixeur dedie -> sous-mixeur commun.
+            // player->eq->mixeurDedie seront reconnectes au format du fichier dans load().
+            engine.connect(players[i], to: eqs[i], format: mixFormat)
+            engine.connect(eqs[i], to: playerMixers[i], format: mixFormat)
+            // mixeurDedie -> sous-mixeur : connexion FIXE au format commun, jamais touchee.
+            engine.connect(playerMixers[i], to: subMixer, format: mixFormat)
         }
 
-        engine.connect(subMixer, to: bassBoost, format: nil)
-        engine.connect(bassBoost, to: reverb, format: nil)
-        engine.connect(reverb, to: engine.mainMixerNode, format: nil)
+        engine.connect(subMixer, to: bassBoost, format: mixFormat)
+        engine.connect(bassBoost, to: reverb, format: mixFormat)
+        engine.connect(reverb, to: engine.mainMixerNode, format: mixFormat)
 
         engine.prepare()
         try? engine.start()
@@ -234,16 +246,27 @@ final class PlayerEngine: ObservableObject {
         guard let lib = library else { return }
         let url = lib.url(for: track)
         guard let file = try? AVAudioFile(forReading: url) else {
-            // Fichier illisible : on saute au suivant.
+            // Fichier illisible (format non supporte, ex. .opus) : on saute au suivant,
+            // mais on s'arrete si toute la file est illisible pour ne pas boucler.
+            consecutiveLoadFailures += 1
+            if consecutiveLoadFailures >= max(1, queue.count) {
+                consecutiveLoadFailures = 0
+                stopPlayback()
+                return
+            }
             next()
             return
         }
+        consecutiveLoadFailures = 0
 
         let format = file.processingFormat
+        // On reconnecte UNIQUEMENT le sous-graphe prive de ce lecteur, au format du
+        // fichier. Le mixeur dedie (playerMixers[i]) ressort au format fixe vers le
+        // sous-mixeur partage, qui n'est jamais reconfigure -> pas de crash.
         engine.disconnectNodeOutput(players[i])
         engine.disconnectNodeOutput(eqs[i])
         engine.connect(players[i], to: eqs[i], format: format)
-        engine.connect(eqs[i], to: subMixer, format: format)
+        engine.connect(eqs[i], to: playerMixers[i], format: format)
 
         players[i].stop()
         players[i].volume = 1.0
