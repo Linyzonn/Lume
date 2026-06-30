@@ -259,14 +259,11 @@ final class PlayerEngine: ObservableObject {
         }
         consecutiveLoadFailures = 0
 
-        let format = file.processingFormat
-        // On reconnecte UNIQUEMENT le sous-graphe prive de ce lecteur, au format du
-        // fichier. Le mixeur dedie (playerMixers[i]) ressort au format fixe vers le
-        // sous-mixeur partage, qui n'est jamais reconfigure -> pas de crash.
-        engine.disconnectNodeOutput(players[i])
-        engine.disconnectNodeOutput(eqs[i])
-        engine.connect(players[i], to: eqs[i], format: format)
-        engine.connect(eqs[i], to: playerMixers[i], format: format)
+        // IMPORTANT : on ne reconfigure PAS le graphe ici. Il est cable une seule fois
+        // (au format fixe `mixFormat`) dans setupEngine(). `scheduleSegment` convertit
+        // automatiquement le fichier (frequence d'echantillonnage ET canaux) vers ce
+        // format. Reconnecter/disconnecter pendant que le moteur tourne fait planter
+        // AVAudioEngine sur iOS 16+ (UpdateGraphAfterReconfig) -> a proscrire.
 
         players[i].stop()
         players[i].volume = 1.0
@@ -481,11 +478,14 @@ final class PlayerEngine: ObservableObject {
 
     private func tick() {
         guard isPlaying, let file = files[activeIndex] else { return }
-        let sr = file.processingFormat.sampleRate
-        var t = Double(startFrames[activeIndex]) / sr
+        // L'offset de depart est exprime en frames du FICHIER ; la position rendue par
+        // le lecteur est exprimee a la frequence de rendu du moteur (mixFormat).
+        let fileSR = file.processingFormat.sampleRate
+        let renderSR = mixFormat.sampleRate
+        var t = Double(startFrames[activeIndex]) / fileSR
         if let nodeTime = players[activeIndex].lastRenderTime,
            let playerTime = players[activeIndex].playerTime(forNodeTime: nodeTime) {
-            t += Double(playerTime.sampleTime) / sr
+            t += Double(playerTime.sampleTime) / renderSR
         }
         currentTime = min(t, duration > 0 ? duration : t)
 
