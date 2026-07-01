@@ -87,9 +87,12 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .leading) {
-            Text("v7")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.4))
+            Text("v8")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(LumeTheme.accent))
         }
         .overlay(alignment: .trailing) {
             Button { isPresented = false } label: {
