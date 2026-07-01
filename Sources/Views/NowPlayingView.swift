@@ -86,6 +86,11 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
         .contentShape(Rectangle())
+        .overlay(alignment: .leading) {
+            Text("v7")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.4))
+        }
         .overlay(alignment: .trailing) {
             Button { isPresented = false } label: {
                 Image(systemName: "chevron.down")
