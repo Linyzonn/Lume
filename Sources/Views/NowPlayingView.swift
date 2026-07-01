@@ -23,24 +23,23 @@ struct NowPlayingView: View {
             backgroundGradient
             VStack(spacing: 0) {
                 grabber
+                    .highPriorityGesture(dismissDrag)
                 Spacer(minLength: 8)
                 artwork
+                    .highPriorityGesture(dismissDrag)
                 Spacer(minLength: 16)
                 trackInfo
                 scrubber
                 transport
+                volumeSection
                 bottomBar
-                    .padding(.top, 8)
+                    .padding(.top, 6)
             }
             .padding(.horizontal, 28)
-            .padding(.bottom, 28)
+            .padding(.bottom, 24)
             .environment(\.colorScheme, .dark)   // texte clair, lisible sur fond colore
-            .offset(y: dragOffset)
-            // Glissement vers le bas : on attache le geste au haut de l'ecran
-            // (poignee + pochette + infos), sans gener le curseur ni les boutons.
-            .simultaneousGesture(dismissDrag)
+            .offset(y: dragOffset)               // suit le doigt 1:1 (pas d'animation ici)
         }
-        .animation(.interactiveSpring(response: 0.35, dampingFraction: 0.85), value: dragOffset)
         .task(id: engine.currentTrack?.id) { updateAmbiance() }
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showLyrics) { LyricsView() }
@@ -122,27 +121,43 @@ struct NowPlayingView: View {
     }
 
     private var trackInfo: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(engine.currentTrack?.title ?? "—")
+                Text(displayTitle)
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(engine.currentTrack?.artist ?? "")
+                Text(displayArtist)
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .truncationMode(.tail)
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)   // largeur bornee -> plus de debordement
             if let track = engine.currentTrack {
                 FavoriteButton(track: track).font(.title2)
             }
         }
         .padding(.bottom, 12)
+    }
+
+    // Titre lisible (repli si le tag est vide).
+    private var displayTitle: String {
+        let t = (engine.currentTrack?.title ?? "").trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? "Titre inconnu" : t
+    }
+
+    // Artiste principal + nombre d'artistes supplementaires (ex. "TIF +3").
+    private var displayArtist: String {
+        let a = (engine.currentTrack?.artist ?? "").trimmingCharacters(in: .whitespaces)
+        guard !a.isEmpty else { return "Artiste inconnu" }
+        let parts = a.split(whereSeparator: { $0 == "," || $0 == "&" || $0 == "/" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if parts.count > 1 { return "\(parts[0]) +\(parts.count - 1)" }
+        return a
     }
 
     private var scrubber: some View {
@@ -200,26 +215,49 @@ struct NowPlayingView: View {
         .padding(.vertical, 8)
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 18) {
-            // Volume systeme.
-            SystemVolumeSlider()
-                .frame(height: 28)
-
-            HStack(spacing: 44) {
-                Button { showLyrics = true } label: {
-                    Image(systemName: "quote.bubble")
-                }
-                Button { showEQ = true } label: {
-                    Image(systemName: "slider.vertical.3")
-                }
-                Button { showQueue = true } label: {
-                    Image(systemName: "list.bullet")
-                }
+    // Volume systeme (0-100 %, synchro iPhone) + boost au-dela de 100 %.
+    private var volumeSection: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "speaker.fill")
+                    .font(.footnote).foregroundStyle(.white.opacity(0.6))
+                SystemVolumeSlider()
+                    .frame(height: 28)
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.footnote).foregroundStyle(.white.opacity(0.6))
             }
-            .font(.title3)
-            .foregroundStyle(.white.opacity(0.8))
+            HStack(spacing: 10) {
+                Image(systemName: "bolt.fill")
+                    .font(.footnote)
+                    .foregroundStyle(engine.volumeBoost > 0 ? LumeTheme.accent : .white.opacity(0.5))
+                Slider(value: Binding(
+                    get: { Double(engine.volumeBoost) },
+                    set: { engine.volumeBoost = Float($0) }
+                ), in: 0...0.5)
+                .tint(LumeTheme.accent)
+                Text("+\(Int((engine.volumeBoost * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 48, alignment: .trailing)
+            }
         }
+        .padding(.top, 6)
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing: 44) {
+            Button { showLyrics = true } label: {
+                Image(systemName: "quote.bubble")
+            }
+            Button { showEQ = true } label: {
+                Image(systemName: "slider.vertical.3")
+            }
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet")
+            }
+        }
+        .font(.title3)
+        .foregroundStyle(.white.opacity(0.8))
     }
 
     private func cycleRepeat() {

@@ -34,6 +34,10 @@ final class PlayerEngine: ObservableObject {
     // Profil d'ecoute actif.
     @Published var listeningMode: ListeningMode = .normal { didSet { applyMode() } }
 
+    // Boost de volume : amplification appliquee APRES le volume systeme.
+    // 0 = 100 % (volume systeme normal), 0.5 = +50 % (soit 150 %).
+    @Published var volumeBoost: Float = 0 { didSet { applyVolumeBoost() } }
+
     enum RepeatMode: String { case off, all, one }
 
     // Reverberation : options simples -> presets systeme.
@@ -196,6 +200,11 @@ final class PlayerEngine: ObservableObject {
         bassBoost.bands[0].gain = bassBoostEnabled ? bassBoostAmount : 0
     }
 
+    // Amplifie la sortie au-dela de 100 % (1.0 = normal, 1.5 = +50 %).
+    private func applyVolumeBoost() {
+        engine.mainMixerNode.outputVolume = 1.0 + max(0, min(0.5, volumeBoost))
+    }
+
     private func applyReverb() {
         if let preset = reverbOption.preset {
             reverb.loadFactoryPreset(preset)
@@ -286,11 +295,21 @@ final class PlayerEngine: ObservableObject {
         if autoPlay {
             activeIndex = i
             currentTrack = track
-            duration = track.duration
+            // Duree calculee depuis le fichier lui-meme (fiable), avec repli sur la
+            // metadonnee si besoin. track.duration vaut souvent 0 -> barre cassee.
+            duration = computedDuration(for: i, fallback: track.duration)
             players[i].play()
             isPlaying = true
             updateNowPlaying()
         }
+    }
+
+    // Duree reelle du fichier charge dans le lecteur i (en secondes).
+    private func computedDuration(for i: Int, fallback: Double) -> Double {
+        guard let file = files[i] else { return fallback }
+        let sr = file.processingFormat.sampleRate
+        let secs = sr > 0 ? Double(file.length) / sr : 0
+        return secs > 0.1 ? secs : fallback
     }
 
     // Fin naturelle d'un morceau (signalee par le callback de planification).
@@ -439,7 +458,7 @@ final class PlayerEngine: ObservableObject {
         players[activeIndex].stop()
         activeIndex = newPlayer
         currentTrack = track
-        duration = track.duration
+        duration = computedDuration(for: newPlayer, fallback: track.duration)
         isPlaying = true
         isCrossfading = false
         // Avance l'index logique de la file.
