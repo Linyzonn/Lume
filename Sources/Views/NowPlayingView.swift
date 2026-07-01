@@ -72,8 +72,10 @@ struct NowPlayingView: View {
                     .blur(radius: 90).opacity(0.35)
                     .ignoresSafeArea()
             }
-            LinearGradient(colors: [.clear, .black.opacity(0.45)],
-                           startPoint: .center, endPoint: .bottom)
+            // Voile sombre progressif : garantit que titre / temps / boutons (texte blanc)
+            // restent lisibles meme quand la pochette est tres claire (ex. fond blanc).
+            LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.35), .black.opacity(0.82)],
+                           startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
         }
         .animation(.easeInOut(duration: 0.6), value: bgTop)
@@ -86,13 +88,14 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
         .contentShape(Rectangle())
-        .overlay(alignment: .leading) {
-            Text("v8")
-                .font(.system(size: 13, weight: .heavy))
+        .overlay(alignment: .center) {
+            Text("v9")
+                .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
                 .background(Capsule().fill(LumeTheme.accent))
+                .offset(y: 26)
         }
         .overlay(alignment: .trailing) {
             Button { isPresented = false } label: {
