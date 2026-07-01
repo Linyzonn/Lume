@@ -110,10 +110,13 @@ struct NowPlayingView: View {
     private var trackInfo: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                MarqueeText(text: displayTitle,
-                            font: .title2.weight(.bold),
-                            color: .white)
-                    .frame(height: 30)
+                Text(displayTitle)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(displayArtist)
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.75))
@@ -121,6 +124,7 @@ struct NowPlayingView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let track = engine.currentTrack {
                 FavoriteButton(track: track).font(.title2)
             }
@@ -224,10 +228,12 @@ struct NowPlayingView: View {
     // MARK: - Volume systeme (le boost est desormais dans le panneau « Son »)
 
     private var volumeSection: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: "speaker.fill")
                 .font(.footnote).foregroundStyle(.white.opacity(0.6))
-            SystemVolumeSlider().frame(height: 28)
+            SystemVolumeSlider()
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
             Image(systemName: "speaker.wave.3.fill")
                 .font(.footnote).foregroundStyle(.white.opacity(0.6))
         }
@@ -268,57 +274,6 @@ struct NowPlayingView: View {
             bgTop = Color(colors.top)
             bgBottom = Color(colors.bottom)
         }
-    }
-}
-
-// MARK: - Texte defilant (marquee) : ne deborde jamais, defile si trop long
-
-struct MarqueeText: View {
-    let text: String
-    var font: Font
-    var color: Color
-
-    @State private var animate = false
-    @State private var textWidth: CGFloat = 0
-    @State private var boxWidth: CGFloat = 0
-
-    private var overflow: CGFloat { max(0, textWidth - boxWidth) }
-
-    var body: some View {
-        GeometryReader { geo in
-            Text(text)
-                .font(font)
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .fixedSize()
-                .background(
-                    GeometryReader { t in
-                        Color.clear
-                            .onAppear {
-                                textWidth = t.size.width
-                                boxWidth = geo.size.width
-                            }
-                    }
-                )
-                .offset(x: (overflow > 0 && animate) ? -overflow - 14 : 0)
-                .animation(
-                    overflow > 0
-                        ? .easeInOut(duration: Double(overflow) / 28 + 2).repeatForever(autoreverses: true)
-                        : .default,
-                    value: animate
-                )
-                .frame(width: geo.size.width, alignment: .leading)
-                .clipped()
-                .onChange(of: textWidth) { _ in retrigger() }
-                .onChange(of: text) { _ in
-                    animate = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { retrigger() }
-                }
-        }
-    }
-
-    private func retrigger() {
-        if overflow > 0 { animate = true } else { animate = false }
     }
 }
 

@@ -130,6 +130,7 @@ final class PlayerEngine: ObservableObject {
 
     private var ticker: Timer?
     private var fadeTimer: Timer?
+    private var lastTickDate: Date?   // pour un suivi du temps fiable (horloge murale)
 
     init() {
         configureSession()
@@ -298,6 +299,9 @@ final class PlayerEngine: ObservableObject {
             // Duree calculee depuis le fichier lui-meme (fiable), avec repli sur la
             // metadonnee si besoin. track.duration vaut souvent 0 -> barre cassee.
             duration = computedDuration(for: i, fallback: track.duration)
+            // Position de depart + reamorcage de l'horloge (barre fiable des le debut).
+            currentTime = Double(startFrame) / max(1, file.processingFormat.sampleRate)
+            lastTickDate = nil
             players[i].play()
             isPlaying = true
             updateNowPlaying()
@@ -496,17 +500,16 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func tick() {
-        guard isPlaying, let file = files[activeIndex] else { return }
-        // L'offset de depart est exprime en frames du FICHIER ; la position rendue par
-        // le lecteur est exprimee a la frequence de rendu du moteur (mixFormat).
-        let fileSR = file.processingFormat.sampleRate
-        let renderSR = mixFormat.sampleRate
-        var t = Double(startFrames[activeIndex]) / fileSR
-        if let nodeTime = players[activeIndex].lastRenderTime,
-           let playerTime = players[activeIndex].playerTime(forNodeTime: nodeTime) {
-            t += Double(playerTime.sampleTime) / renderSR
+        guard isPlaying else { lastTickDate = nil; return }
+        // Suivi du temps par horloge murale : fiable des la premiere seconde, sans
+        // dependre de l'horloge interne du lecteur (qui n'est pas amorcee au demarrage).
+        let now = Date()
+        if let last = lastTickDate {
+            var t = currentTime + now.timeIntervalSince(last)
+            if duration > 0 { t = min(t, duration) }
+            currentTime = t
         }
-        currentTime = min(t, duration > 0 ? duration : t)
+        lastTickDate = now
 
         // Declenchement du crossfade.
         if crossfadeDuration > 0, !isCrossfading, duration > 0 {
