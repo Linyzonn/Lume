@@ -12,9 +12,7 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
     @State private var showEQ = false
 
-    // Glisser vers le bas pour fermer.
     @State private var dragOffset: CGFloat = 0
-    // Couleurs d'ambiance derivees de la pochette (fond plein ecran).
     @State private var bgTop: Color = Color(red: 0.13, green: 0.13, blue: 0.17)
     @State private var bgBottom: Color = .black
 
@@ -29,16 +27,16 @@ struct NowPlayingView: View {
                     .highPriorityGesture(dismissDrag)
                 Spacer(minLength: 16)
                 trackInfo
-                scrubber
+                progressBar
                 transport
                 volumeSection
                 bottomBar
-                    .padding(.top, 6)
+                    .padding(.top, 10)
             }
             .padding(.horizontal, 28)
             .padding(.bottom, 24)
-            .environment(\.colorScheme, .dark)   // texte clair, lisible sur fond colore
-            .offset(y: dragOffset)               // suit le doigt 1:1 (pas d'animation ici)
+            .environment(\.colorScheme, .dark)
+            .offset(y: dragOffset)
         }
         .task(id: engine.currentTrack?.id) { updateAmbiance() }
         .sheet(isPresented: $showQueue) { QueueView() }
@@ -46,45 +44,34 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showEQ) { EqualizerView() }
     }
 
-    // MARK: - Geste de fermeture
+    // MARK: - Fermeture par glissement (coordonnees globales => pas de tremblement)
 
     private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: 20, coordinateSpace: .global)
             .onChanged { value in
-                // On ne reagit qu'au glissement vers le bas.
-                if value.translation.height > 0 {
-                    dragOffset = value.translation.height
-                }
+                if value.translation.height > 0 { dragOffset = value.translation.height }
             }
             .onEnded { value in
                 if value.translation.height > 120 {
                     isPresented = false
                 } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        dragOffset = 0
-                    }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { dragOffset = 0 }
                 }
             }
     }
 
-    // MARK: - Composants
+    // MARK: - Fond
 
     private var backgroundGradient: some View {
         ZStack {
-            // Degrade plein ecran derive de la pochette.
-            LinearGradient(colors: [bgTop, bgBottom],
-                           startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [bgTop, bgBottom], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
-            // Pochette floutee, subtile, pour la matiere (sans voile gris).
             if let track = engine.currentTrack, let img = library.artworkImage(for: track) {
                 Image(uiImage: img)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 90)
-                    .opacity(0.35)
+                    .resizable().scaledToFill()
+                    .blur(radius: 90).opacity(0.35)
                     .ignoresSafeArea()
             }
-            // Leger voile sombre en bas pour la lisibilite des controles.
             LinearGradient(colors: [.clear, .black.opacity(0.45)],
                            startPoint: .center, endPoint: .bottom)
                 .ignoresSafeArea()
@@ -116,40 +103,36 @@ struct NowPlayingView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.75), value: engine.isPlaying)
     }
 
-    private var artworkSize: CGFloat {
-        min(UIScreen.main.bounds.width - 56, 360)
-    }
+    private var artworkSize: CGFloat { min(UIScreen.main.bounds.width - 56, 360) }
+
+    // MARK: - Titre / artiste
 
     private var trackInfo: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(displayTitle)
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.7)
-                    .multilineTextAlignment(.leading)
+                MarqueeText(text: displayTitle,
+                            font: .title2.weight(.bold),
+                            color: .white)
+                    .frame(height: 30)
                 Text(displayArtist)
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)   // largeur bornee -> plus de debordement
             if let track = engine.currentTrack {
                 FavoriteButton(track: track).font(.title2)
             }
         }
-        .padding(.bottom, 12)
+        .padding(.bottom, 14)
     }
 
-    // Titre lisible (repli si le tag est vide).
     private var displayTitle: String {
         let t = (engine.currentTrack?.title ?? "").trimmingCharacters(in: .whitespaces)
         return t.isEmpty ? "Titre inconnu" : t
     }
 
-    // Artiste principal + nombre d'artistes supplementaires (ex. "TIF +3").
     private var displayArtist: String {
         let a = (engine.currentTrack?.artist ?? "").trimmingCharacters(in: .whitespaces)
         guard !a.isEmpty else { return "Artiste inconnu" }
@@ -160,16 +143,41 @@ struct NowPlayingView: View {
         return a
     }
 
-    private var scrubber: some View {
-        VStack(spacing: 4) {
-            Slider(value: Binding(
-                get: { isScrubbing ? scrubValue : engine.currentTime },
-                set: { scrubValue = $0 }
-            ), in: 0...max(1, engine.duration), onEditingChanged: { editing in
-                isScrubbing = editing
-                if !editing { engine.seek(to: scrubValue) }
-            })
-            .tint(.white)
+    // MARK: - Barre de progression (maison, fiable)
+
+    private var progressBar: some View {
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let value = isScrubbing ? scrubValue : engine.currentTime
+                let frac = engine.duration > 0 ? CGFloat(value / engine.duration) : 0
+                let clamped = max(0, min(1, frac))
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.25)).frame(height: 5)
+                    Capsule().fill(.white).frame(width: w * clamped, height: 5)
+                    Circle().fill(.white)
+                        .frame(width: 15, height: 15)
+                        .shadow(radius: 2)
+                        .offset(x: (w - 15) * clamped)
+                }
+                .frame(height: 20)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { g in
+                            guard engine.duration > 0 else { return }
+                            isScrubbing = true
+                            let p = min(max(0, g.location.x / w), 1)
+                            scrubValue = Double(p) * engine.duration
+                        }
+                        .onEnded { _ in
+                            guard engine.duration > 0 else { return }
+                            engine.seek(to: scrubValue)
+                            isScrubbing = false
+                        }
+                )
+            }
+            .frame(height: 20)
 
             HStack {
                 Text((isScrubbing ? scrubValue : engine.currentTime).asTimeString)
@@ -177,10 +185,12 @@ struct NowPlayingView: View {
                 Text(engine.duration.asTimeString)
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.7))
+            .foregroundStyle(.white.opacity(0.75))
         }
-        .padding(.bottom, 12)
+        .padding(.bottom, 10)
     }
+
+    // MARK: - Transport
 
     private var transport: some View {
         HStack(spacing: 36) {
@@ -190,20 +200,16 @@ struct NowPlayingView: View {
             }
             .font(.title3)
 
-            Button { engine.previous() } label: {
-                Image(systemName: "backward.fill")
-            }
-            .font(.title)
+            Button { engine.previous() } label: { Image(systemName: "backward.fill") }
+                .font(.title)
 
             Button { engine.togglePlayPause() } label: {
                 Image(systemName: engine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 72))
             }
 
-            Button { engine.next() } label: {
-                Image(systemName: "forward.fill")
-            }
-            .font(.title)
+            Button { engine.next() } label: { Image(systemName: "forward.fill") }
+                .font(.title)
 
             Button { cycleRepeat() } label: {
                 Image(systemName: engine.repeatMode == .one ? "repeat.1" : "repeat")
@@ -215,46 +221,24 @@ struct NowPlayingView: View {
         .padding(.vertical, 8)
     }
 
-    // Volume systeme (0-100 %, synchro iPhone) + boost au-dela de 100 %.
+    // MARK: - Volume systeme (le boost est desormais dans le panneau « Son »)
+
     private var volumeSection: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "speaker.fill")
-                    .font(.footnote).foregroundStyle(.white.opacity(0.6))
-                SystemVolumeSlider()
-                    .frame(height: 28)
-                Image(systemName: "speaker.wave.3.fill")
-                    .font(.footnote).foregroundStyle(.white.opacity(0.6))
-            }
-            HStack(spacing: 10) {
-                Image(systemName: "bolt.fill")
-                    .font(.footnote)
-                    .foregroundStyle(engine.volumeBoost > 0 ? LumeTheme.accent : .white.opacity(0.5))
-                Slider(value: Binding(
-                    get: { Double(engine.volumeBoost) },
-                    set: { engine.volumeBoost = Float($0) }
-                ), in: 0...0.5)
-                .tint(LumeTheme.accent)
-                Text("+\(Int((engine.volumeBoost * 100).rounded()))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-                    .frame(width: 48, alignment: .trailing)
-            }
+        HStack(spacing: 10) {
+            Image(systemName: "speaker.fill")
+                .font(.footnote).foregroundStyle(.white.opacity(0.6))
+            SystemVolumeSlider().frame(height: 28)
+            Image(systemName: "speaker.wave.3.fill")
+                .font(.footnote).foregroundStyle(.white.opacity(0.6))
         }
         .padding(.top, 6)
     }
 
     private var bottomBar: some View {
         HStack(spacing: 44) {
-            Button { showLyrics = true } label: {
-                Image(systemName: "quote.bubble")
-            }
-            Button { showEQ = true } label: {
-                Image(systemName: "slider.vertical.3")
-            }
-            Button { showQueue = true } label: {
-                Image(systemName: "list.bullet")
-            }
+            Button { showLyrics = true } label: { Image(systemName: "quote.bubble") }
+            Button { showEQ = true } label: { Image(systemName: "slider.vertical.3") }
+            Button { showQueue = true } label: { Image(systemName: "list.bullet") }
         }
         .font(.title3)
         .foregroundStyle(.white.opacity(0.8))
@@ -268,7 +252,7 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Ambiance (couleurs derivees de la pochette)
+    // MARK: - Ambiance (couleurs depuis la pochette)
 
     private func updateAmbiance() {
         guard let track = engine.currentTrack,
@@ -287,6 +271,57 @@ struct NowPlayingView: View {
     }
 }
 
+// MARK: - Texte defilant (marquee) : ne deborde jamais, defile si trop long
+
+struct MarqueeText: View {
+    let text: String
+    var font: Font
+    var color: Color
+
+    @State private var animate = false
+    @State private var textWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+
+    private var overflow: CGFloat { max(0, textWidth - boxWidth) }
+
+    var body: some View {
+        GeometryReader { geo in
+            Text(text)
+                .font(font)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .fixedSize()
+                .background(
+                    GeometryReader { t in
+                        Color.clear
+                            .onAppear {
+                                textWidth = t.size.width
+                                boxWidth = geo.size.width
+                            }
+                    }
+                )
+                .offset(x: (overflow > 0 && animate) ? -overflow - 14 : 0)
+                .animation(
+                    overflow > 0
+                        ? .easeInOut(duration: Double(overflow) / 28 + 2).repeatForever(autoreverses: true)
+                        : .default,
+                    value: animate
+                )
+                .frame(width: geo.size.width, alignment: .leading)
+                .clipped()
+                .onChange(of: textWidth) { _ in retrigger() }
+                .onChange(of: text) { _ in
+                    animate = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { retrigger() }
+                }
+        }
+    }
+
+    private func retrigger() {
+        if overflow > 0 { animate = true } else { animate = false }
+    }
+}
+
 // Curseur de volume systeme (enveloppe MPVolumeView).
 struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
@@ -298,11 +333,9 @@ struct SystemVolumeSlider: UIViewRepresentable {
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
 }
 
-// MARK: - Extraction des couleurs d'ambiance depuis la pochette
+// MARK: - Couleurs d'ambiance depuis la pochette
 
 extension UIImage {
-    // Deux couleurs (haut / bas) tirees de la pochette, assombries pour rester
-    // lisibles sous du texte blanc.
     func ambianceColors() -> (top: UIColor, bottom: UIColor) {
         let top = averageColor(upperHalf: true)?.ambianceAdjusted(maxBrightness: 0.55) ?? UIColor(white: 0.18, alpha: 1)
         let bottom = averageColor(upperHalf: false)?.ambianceAdjusted(maxBrightness: 0.28) ?? .black
@@ -312,8 +345,6 @@ extension UIImage {
     private func averageColor(upperHalf: Bool) -> UIColor? {
         guard let ci = CIImage(image: self) else { return nil }
         let e = ci.extent
-        // Repere CoreImage : origine en bas a gauche -> la moitie "haute" de l'image
-        // correspond a la partie superieure en Y.
         let rect = upperHalf
             ? CGRect(x: e.minX, y: e.midY, width: e.width, height: e.height / 2)
             : CGRect(x: e.minX, y: e.minY, width: e.width, height: e.height / 2)
@@ -332,12 +363,9 @@ extension UIImage {
 }
 
 extension UIColor {
-    // Plafonne la luminosite (assombrit les pochettes claires) et rehausse un peu la
-    // saturation pour une ambiance plus marquee.
     func ambianceAdjusted(maxBrightness: CGFloat) -> UIColor {
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         guard getHue(&h, saturation: &s, brightness: &b, alpha: &a) else {
-            // Couleur non convertible (gris) : on renvoie un gris sombre.
             var w: CGFloat = 0
             getWhite(&w, alpha: &a)
             return UIColor(white: min(w, maxBrightness), alpha: 1)

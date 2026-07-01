@@ -21,6 +21,7 @@ struct EqualizerView: View {
             ScrollView {
                 VStack(spacing: 28) {
                     modeSection
+                    boostSection
                     bassSection
                     ambianceSection
                     eqSection
@@ -69,6 +70,28 @@ struct EqualizerView: View {
                 .padding(.horizontal)
             }
             Text("Choisis un profil adapté à ton écoute. Il règle d'un coup l'égaliseur, les basses et l'ambiance.")
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+        }
+    }
+
+    // MARK: - Boost de volume
+
+    private var boostSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Boost de volume", systemImage: "bolt.fill")
+            HStack {
+                Text("100%").font(.caption).foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { Double(engine.volumeBoost) },
+                    set: { engine.volumeBoost = Float($0) }
+                ), in: 0...0.5, step: 0.05)
+                .tint(LumeTheme.accent)
+                Text("\(100 + Int((engine.volumeBoost * 100).rounded()))%")
+                    .font(.subheadline.monospacedDigit())
+                    .frame(width: 52)
+            }
+            .padding(.horizontal)
+            Text("Amplifie le son au-delà du volume maximal de l'iPhone. À forte valeur, un peu de saturation est possible.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
         }
     }
