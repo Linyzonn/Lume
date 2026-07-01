@@ -89,7 +89,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v9")
+            Text("v10")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
@@ -114,33 +114,32 @@ struct NowPlayingView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.75), value: engine.isPlaying)
     }
 
-    private var artworkSize: CGFloat { min(UIScreen.main.bounds.width - 56, 360) }
+    private var artworkSize: CGFloat { min(UIScreen.main.bounds.width - 96, 300) }
 
     // MARK: - Titre / artiste
 
     private var trackInfo: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(displayTitle)
-                    .font(.title2.weight(.bold))
+                    .font(.title3.weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.6)
+                    .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(displayArtist)
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.75))
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let track = engine.currentTrack {
-                FavoriteButton(track: track).font(.title2)
+                FavoriteButton(track: track).font(.title2).foregroundStyle(.white)
             }
         }
-        .padding(.bottom, 14)
+        .padding(.bottom, 12)
     }
 
     private var displayTitle: String {
@@ -200,7 +199,7 @@ struct NowPlayingView: View {
                 Text(engine.duration.asTimeString)
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.75))
+            .foregroundStyle(.white.opacity(0.9))
         }
         .padding(.bottom, 10)
     }

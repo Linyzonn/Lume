@@ -65,7 +65,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Version", value: "1.2 (v9)")
+                    LabeledContent("Version", value: "1.3 (v10)")
                 } footer: {
                     Text("Lume — lecteur de musique local. Tes fichiers restent sur ton iPhone, aucune connexion requise.")
                 }
