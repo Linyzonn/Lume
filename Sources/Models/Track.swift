@@ -41,6 +41,17 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+// MARK: - Envie (titre repere dans Decouvrir, a recuperer plus tard)
+
+struct WishItem: Codable, Identifiable, Equatable {
+    let id: Int              // identifiant Deezer
+    let title: String
+    let artist: String
+    let coverURL: String?
+    let linkURL: String?
+    var dateAdded: Date = Date()
+}
+
 // MARK: - Statistiques d'ecoute d'un morceau (stockees a part dans stats.json)
 
 struct TrackStats: Codable {

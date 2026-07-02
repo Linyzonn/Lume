@@ -105,7 +105,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v15")
+            Text("v17")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)

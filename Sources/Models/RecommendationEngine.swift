@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import NaturalLanguage
 
 // MARK: - Modeles de recommandation
 
@@ -11,6 +12,7 @@ struct Recommendation: Identifiable, Equatable {
     let previewURL: String?      // extrait MP3 de 30 s (ecoute en ligne)
     let linkURL: String?         // page Deezer du titre
     let reason: String
+    var bpm: Double? = nil       // tempo (si connu de Deezer)
 
     static func == (l: Recommendation, r: Recommendation) -> Bool { l.id == r.id }
 }
@@ -42,8 +44,12 @@ final class Recommender: ObservableObject {
     @Published var sections: [RecommendationSection] = []
     @Published var isLoading = false
     @Published var message: String?
+    // Resume lisible du profil : genres, langues, tempo (affiche dans Decouvrir).
+    @Published var profileSummary: String?
 
     private var lastRefresh: Date?
+    private var genreNames: [Int: String] = [:]
+    private var bpmCenter: Double?    // tempo median de tes titres preferes
 
     // Score de gout par artiste, du prefere au moins aime.
     static func tasteProfile(library: LibraryStore) -> [(name: String, score: Double)] {
@@ -105,11 +111,26 @@ final class Recommender: ObservableObject {
                            LibraryStore.normalized(t.artist.name))
         }
 
+        // Table des genres Deezer (une seule fois).
+        if genreNames.isEmpty { genreNames = await DeezerAPI.genres() }
+
+        // Profil BPM : tempo median de tes titres les mieux notes (mis en cache 7 jours).
+        await computeBPMProfileIfNeeded(library: library, profile: profile)
+
         var newSections: [RecommendationSection] = []
         var seenIDs = Set<Int>()
+        var mainGenreID: Int?
+        var mainGenreName: String?
 
-        for (artistName, _) in profile.prefix(4) {
+        for (rank, entry) in profile.prefix(4).enumerated() {
+            let artistName = entry.name
             guard let dzArtist = await DeezerAPI.searchArtist(artistName) else { continue }
+
+            // Genre principal du 1er artiste (pour la section Tendances plus bas).
+            if rank == 0, let gid = await DeezerAPI.artistMainGenreID(artistID: dzArtist.id) {
+                mainGenreID = gid
+                mainGenreName = genreNames[gid]
+            }
 
             var items: [Recommendation] = []
 
@@ -138,11 +159,119 @@ final class Recommender: ObservableObject {
             }
         }
 
+        // 3) Tendances du genre principal (au-dela de tes artistes : le STYLE).
+        if let gid = mainGenreID {
+            let chart = await DeezerAPI.genreChartTracks(genreID: gid, limit: 15)
+            var items: [Recommendation] = []
+            for t in chart where !alreadyOwned(t) && !seenIDs.contains(t.id) {
+                items.append(recommendation(from: t, reason: mainGenreName ?? "Tendance"))
+                seenIDs.insert(t.id)
+                if items.count >= 8 { break }
+            }
+            if !items.isEmpty {
+                newSections.append(RecommendationSection(
+                    title: "Tendances \(mainGenreName ?? "de ton style")",
+                    items: items))
+            }
+        }
+
+        // 4) Enrichissement BPM des suggestions (plafonne pour rester rapide),
+        //    puis tri : les titres proches de TON tempo passent en premier.
+        newSections = await enrichWithBPM(sections: newSections, cap: 16)
+
         sections = newSections
         lastRefresh = Date()
+        updateProfileSummary(library: library, genreName: mainGenreName)
         if newSections.isEmpty {
             message = "Impossible de charger des recommandations. Vérifie ta connexion Internet, puis réessaie."
         }
+    }
+
+    // MARK: - Profil BPM
+
+    private func computeBPMProfileIfNeeded(library: LibraryStore,
+                                           profile: [(name: String, score: Double)]) async {
+        let d = UserDefaults.standard
+        if let saved = d.object(forKey: "bpm.center") as? Double,
+           let date = d.object(forKey: "bpm.date") as? Date,
+           Date().timeIntervalSince(date) < 7 * 86400 {
+            bpmCenter = saved > 0 ? saved : nil
+            return
+        }
+        // Echantillon : tes 6 morceaux les mieux notes, retrouves sur Deezer.
+        let ranked = library.tracks.sorted { a, b in
+            let sa = library.stats[a.id], sb = library.stats[b.id]
+            let scoreA = Double(sa?.plays ?? 0) * 2 + (a.isFavorite ? 4 : 0) - Double(sa?.skips ?? 0)
+            let scoreB = Double(sb?.plays ?? 0) * 2 + (b.isFavorite ? 4 : 0) - Double(sb?.skips ?? 0)
+            return scoreA > scoreB
+        }
+        var bpms: [Double] = []
+        for track in ranked.prefix(6) {
+            let artist = track.artistList.first ?? track.artist
+            guard let found = await DeezerAPI.searchTrack(title: track.title, artist: artist),
+                  let details = await DeezerAPI.trackDetails(id: found.id),
+                  let bpm = details.bpm, bpm > 40 else { continue }
+            bpms.append(bpm)
+        }
+        let center: Double = bpms.isEmpty ? 0 : bpms.sorted()[bpms.count / 2]
+        bpmCenter = center > 0 ? center : nil
+        d.set(center, forKey: "bpm.center")
+        d.set(Date(), forKey: "bpm.date")
+    }
+
+    private func enrichWithBPM(sections: [RecommendationSection], cap: Int) async -> [RecommendationSection] {
+        var budget = cap
+        var out: [RecommendationSection] = []
+        for section in sections {
+            var items = section.items
+            for i in items.indices where budget > 0 {
+                if let details = await DeezerAPI.trackDetails(id: items[i].id),
+                   let bpm = details.bpm, bpm > 40 {
+                    items[i].bpm = bpm
+                }
+                budget -= 1
+            }
+            // Les titres dans ta zone de tempo (±15 %) remontent en tete.
+            if let center = bpmCenter {
+                items.sort { a, b in
+                    func closeness(_ r: Recommendation) -> Double {
+                        guard let bpm = r.bpm else { return 0.5 }
+                        return abs(bpm - center) / center < 0.15 ? 0 : 1
+                    }
+                    return closeness(a) < closeness(b)
+                }
+            }
+            out.append(RecommendationSection(title: section.title, items: items))
+        }
+        return out
+    }
+
+    // MARK: - Resume du profil (genres, langues, tempo)
+
+    private func updateProfileSummary(library: LibraryStore, genreName: String?) {
+        var parts: [String] = []
+        if let genreName { parts.append(genreName) }
+        let languages = dominantLanguages(library: library)
+        if !languages.isEmpty { parts.append(languages.joined(separator: ", ")) }
+        if let center = bpmCenter { parts.append("~\(Int(center)) BPM") }
+        profileSummary = parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    // Langues dominantes, detectees LOCALEMENT depuis les paroles de ta
+    // bibliotheque (aucune requete reseau).
+    private func dominantLanguages(library: LibraryStore) -> [String] {
+        var counts: [String: Int] = [:]
+        for track in library.tracks {
+            guard let lyrics = track.lyrics, lyrics.count > 80 else { continue }
+            let sample = String(lyrics.prefix(500))
+            guard let lang = NLLanguageRecognizer.dominantLanguage(for: sample)?.rawValue else { continue }
+            counts[lang, default: 0] += 1
+        }
+        return counts.sorted { $0.value > $1.value }
+            .prefix(2)
+            .compactMap { code, _ in
+                Locale.current.localizedString(forLanguageCode: code)?.capitalized
+            }
     }
 
     private func recommendation(from t: DeezerAPI.TrackItem, reason: String) -> Recommendation {

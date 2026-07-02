@@ -19,6 +19,12 @@ final class LibraryStore: ObservableObject {
     // Incremente quand une photo d'artiste est telechargee (rafraichit les vues).
     @Published var artistImagesVersion = 0
 
+    // Liste d'envies : titres reperes dans Decouvrir, a recuperer plus tard.
+    // Quand un fichier correspondant est importe (via iTunes ou Fichiers),
+    // il est automatiquement reconnu, retire de la liste et range dans la
+    // playlist "Découvertes".
+    @Published var wishlist: [WishItem] = []
+
     // Dossiers de stockage.
     // - `docs` (Documents) est VISIBLE dans iTunes/Finder : il sert uniquement
     //   de boite de depot pour ajouter de la musique depuis un ordinateur.
@@ -31,6 +37,7 @@ final class LibraryStore: ObservableObject {
     private let artistImagesDir: URL
     private let libraryFile: URL
     private let statsFile: URL
+    private let wishlistFile: URL
 
     // Caches de regroupement (recalcules uniquement quand la liste change) :
     // sans eux, chaque ligne de l'onglet Artistes recalculait TOUT le
@@ -53,13 +60,34 @@ final class LibraryStore: ObservableObject {
         artistImagesDir = support.appendingPathComponent("ArtistImages", isDirectory: true)
         libraryFile = support.appendingPathComponent("library.json")
         statsFile = support.appendingPathComponent("stats.json")
+        wishlistFile = support.appendingPathComponent("wishlist.json")
 
         try? fm.createDirectory(at: tracksDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: artworkDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: artistImagesDir, withIntermediateDirectories: true)
         migrateFromDocumentsIfNeeded()
+
+        // Rend le dossier Lume visible dans l'app Fichiers (Sur mon iPhone).
+        // iOS n'affiche parfois le dossier d'une app que s'il contient au moins
+        // un element ; or l'import automatique vide Documents apres chaque
+        // depot. Ce petit lisez-moi permanent regle le probleme (il n'est pas
+        // un fichier audio, donc jamais importe ni supprime par le scan).
+        let readme = docs.appendingPathComponent("Dépose ta musique ici.txt")
+        if !fm.fileExists(atPath: readme.path) {
+            let text = """
+            Dépose ici tes fichiers audio (MP3, M4A, FLAC, WAV…),
+            depuis l'app Fichiers de l'iPhone ou depuis iTunes/Finder sur ordinateur.
+
+            Ils seront importés automatiquement à l'ouverture de Lume,
+            puis ce dossier se videra : c'est normal, ta musique est rangée
+            dans la bibliothèque de l'app.
+            """
+            try? text.write(to: readme, atomically: true, encoding: .utf8)
+        }
+
         load()
         loadStats()
+        loadWishlist()
     }
 
     // Migration depuis les anciennes versions ou tout vivait dans Documents.
@@ -182,6 +210,7 @@ final class LibraryStore: ObservableObject {
                 continue
             }
             tracks.append(track)
+            matchWishlist(track)
         }
         // Tri par date d'ajout (recent en haut).
         tracks.sort { $0.dateAdded > $1.dateAdded }
@@ -223,6 +252,7 @@ final class LibraryStore: ObservableObject {
                 continue
             }
             tracks.append(track)
+            matchWishlist(track)
         }
         tracks.sort { $0.dateAdded > $1.dateAdded }
     }
@@ -618,6 +648,68 @@ final class LibraryStore: ObservableObject {
             return match.value
         }
         return []
+    }
+
+    // MARK: - Liste d'envies
+
+    private func loadWishlist() {
+        guard let data = try? Data(contentsOf: wishlistFile),
+              let decoded = try? JSONDecoder().decode([WishItem].self, from: data) else { return }
+        wishlist = decoded
+    }
+
+    private func saveWishlist() {
+        if let encoded = try? JSONEncoder().encode(wishlist) {
+            try? encoded.write(to: wishlistFile, options: .atomic)
+        }
+    }
+
+    func isWished(_ id: Int) -> Bool {
+        wishlist.contains { $0.id == id }
+    }
+
+    func toggleWish(_ item: WishItem) {
+        if let idx = wishlist.firstIndex(where: { $0.id == item.id }) {
+            wishlist.remove(at: idx)
+        } else {
+            wishlist.insert(item, at: 0)
+        }
+        saveWishlist()
+    }
+
+    func removeWish(_ item: WishItem) {
+        wishlist.removeAll { $0.id == item.id }
+        saveWishlist()
+    }
+
+    // Reconnaissance automatique : appele apres chaque import. Si le morceau
+    // correspond a une envie (titre + artiste), l'envie est retiree et le
+    // morceau range dans la playlist "Découvertes".
+    private func matchWishlist(_ track: Track) {
+        let trackTitle = Self.normalized(Self.cleanedTitle(track.title))
+        let trackArtists = track.artistList.map { Self.normalized($0) }
+        guard let match = wishlist.first(where: { wish in
+            let wishTitle = Self.normalized(Self.cleanedTitle(wish.title))
+            let wishArtist = Self.normalized(wish.artist)
+            let titleOK = wishTitle == trackTitle
+                || wishTitle.contains(trackTitle) || trackTitle.contains(wishTitle)
+            let artistOK = trackArtists.contains { $0 == wishArtist
+                || $0.contains(wishArtist) || wishArtist.contains($0) }
+            return titleOK && artistOK
+        }) else { return }
+
+        wishlist.removeAll { $0.id == match.id }
+        saveWishlist()
+
+        // Range dans la playlist "Découvertes" (creee au besoin).
+        if !playlists.contains(where: { $0.name == "Découvertes" }) {
+            playlists.append(Playlist(name: "Découvertes"))
+        }
+        if let i = playlists.firstIndex(where: { $0.name == "Découvertes" }),
+           !playlists[i].trackIDs.contains(track.id) {
+            playlists[i].trackIDs.append(track.id)
+        }
+        save()
     }
 
     private func saveArtwork(_ data: Data) -> String? {
