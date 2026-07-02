@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var sleepTimer: SleepTimer
     @State private var showSleepOptions = false
+    @State private var duplicatesRemoved: Int?
 
     var body: some View {
         NavigationStack {
@@ -75,19 +76,35 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(library.isImporting)
+                    Button {
+                        duplicatesRemoved = library.removeDuplicateTracks()
+                    } label: {
+                        Label("Nettoyer les doublons", systemImage: "doc.on.doc")
+                    }
+                    .disabled(library.isImporting)
                 } header: {
                     Text("Bibliothèque")
                 } footer: {
-                    Text("Relit titre, artiste et durée depuis les fichiers. À lancer une fois après cette mise à jour pour corriger les morceaux déjà importés.")
+                    Text("Astuce : dépose des fichiers audio dans « Documents Lume » via iTunes/Finder, ils sont importés automatiquement à l'ouverture de l'app. « Nettoyer les doublons » fusionne les morceaux identiques (favoris, paroles et playlists sont conservés).")
                 }
 
                 Section {
-                    LabeledContent("Version", value: "1.5 (v13)")
+                    LabeledContent("Version", value: "1.6 (v14)")
                 } footer: {
                     Text("Lume — lecteur de musique local. Tes fichiers restent sur ton iPhone, aucune connexion requise.")
                 }
             }
             .navigationTitle("Réglages")
+            .alert("Nettoyage terminé", isPresented: Binding(
+                get: { duplicatesRemoved != nil },
+                set: { if !$0 { duplicatesRemoved = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text((duplicatesRemoved ?? 0) == 0
+                     ? "Aucun doublon trouvé, ta bibliothèque est propre."
+                     : "\(duplicatesRemoved ?? 0) doublon(s) supprimé(s).")
+            }
             .confirmationDialog("Minuteur de sommeil", isPresented: $showSleepOptions, titleVisibility: .visible) {
                 ForEach([10, 15, 30, 45, 60, 90], id: \.self) { minutes in
                     Button("\(minutes) minutes") { sleepTimer.start(minutes: minutes) }

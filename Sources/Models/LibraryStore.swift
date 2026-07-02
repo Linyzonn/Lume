@@ -7,27 +7,81 @@ import Combine
 // sauvegarde tout sur le disque, gere playlists et favoris.
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published var tracks: [Track] = []
+    @Published var tracks: [Track] = [] { didSet { invalidateGroupCaches() } }
     @Published var playlists: [Playlist] = []
     @Published var isImporting = false
     @Published var importProgress: String = ""
 
-    // Dossiers de stockage dans le conteneur de l'app.
+    // Dossiers de stockage.
+    // - `docs` (Documents) est VISIBLE dans iTunes/Finder : il sert uniquement
+    //   de boite de depot pour ajouter de la musique depuis un ordinateur.
+    // - Les donnees internes (fichiers importes, pochettes, base library.json)
+    //   vivent dans Application Support : INVISIBLES dans le partage de
+    //   fichiers, elles n'encombrent plus la liste iTunes.
     private let docs: URL
     private let tracksDir: URL
     private let artworkDir: URL
     private let libraryFile: URL
 
+    // Caches de regroupement (recalcules uniquement quand la liste change) :
+    // sans eux, chaque ligne de l'onglet Artistes recalculait TOUT le
+    // regroupement, d'ou les saccades de defilement.
+    private var artistsCache: [String: [Track]]?
+    private var albumsCache: [String: [Track]]?
+    // Cache de miniatures de pochettes (decodage disque fait une seule fois).
+    private let thumbCache = NSCache<NSString, UIImage>()
+
+    // Extensions audio reconnues pour l'import automatique.
+    static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "aif", "aiff", "aifc", "caf"]
+
     init() {
         let fm = FileManager.default
         docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        tracksDir = docs.appendingPathComponent("Tracks", isDirectory: true)
-        artworkDir = docs.appendingPathComponent("Artwork", isDirectory: true)
-        libraryFile = docs.appendingPathComponent("library.json")
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lume", isDirectory: true)
+        tracksDir = support.appendingPathComponent("Tracks", isDirectory: true)
+        artworkDir = support.appendingPathComponent("Artwork", isDirectory: true)
+        libraryFile = support.appendingPathComponent("library.json")
 
         try? fm.createDirectory(at: tracksDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: artworkDir, withIntermediateDirectories: true)
+        migrateFromDocumentsIfNeeded()
         load()
+    }
+
+    // Migration depuis les anciennes versions ou tout vivait dans Documents.
+    private func migrateFromDocumentsIfNeeded() {
+        let fm = FileManager.default
+        let oldPairs: [(URL, URL)] = [
+            (docs.appendingPathComponent("Tracks", isDirectory: true), tracksDir),
+            (docs.appendingPathComponent("Artwork", isDirectory: true), artworkDir)
+        ]
+        for (oldDir, newDir) in oldPairs {
+            guard fm.fileExists(atPath: oldDir.path) else { continue }
+            let items = (try? fm.contentsOfDirectory(at: oldDir, includingPropertiesForKeys: nil)) ?? []
+            for item in items {
+                let dest = newDir.appendingPathComponent(item.lastPathComponent)
+                if !fm.fileExists(atPath: dest.path) {
+                    try? fm.moveItem(at: item, to: dest)
+                }
+            }
+            if ((try? fm.contentsOfDirectory(atPath: oldDir.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: oldDir)
+            }
+        }
+        let oldLibrary = docs.appendingPathComponent("library.json")
+        if fm.fileExists(atPath: oldLibrary.path) {
+            if !fm.fileExists(atPath: libraryFile.path) {
+                try? fm.moveItem(at: oldLibrary, to: libraryFile)
+            } else {
+                try? fm.removeItem(at: oldLibrary)
+            }
+        }
+    }
+
+    private func invalidateGroupCaches() {
+        artistsCache = nil
+        albumsCache = nil
     }
 
     // MARK: - Chemins
@@ -41,6 +95,20 @@ final class LibraryStore: ObservableObject {
         let url = artworkDir.appendingPathComponent(name)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return UIImage(data: data)
+    }
+
+    // Miniature de pochette, mise en cache et utilisable hors du thread
+    // principal : les listes ne relisent plus le disque a chaque ligne.
+    nonisolated func thumbnail(for track: Track, pixelSize: CGFloat) -> UIImage? {
+        guard let name = track.artworkFileName else { return nil }
+        let key = "\(name)#\(Int(pixelSize))" as NSString
+        if let cached = thumbCache.object(forKey: key) { return cached }
+        let fileURL = artworkDir.appendingPathComponent(name)
+        guard let data = try? Data(contentsOf: fileURL),
+              let image = UIImage(data: data) else { return nil }
+        let thumb = image.resized(maxDimension: pixelSize)
+        thumbCache.setObject(thumb, forKey: key)
+        return thumb
     }
 
     // MARK: - Persistance
@@ -92,10 +160,112 @@ final class LibraryStore: ObservableObject {
             let track = await extractMetadata(from: dest,
                                               storedName: storedName,
                                               fallbackName: source.deletingPathExtension().lastPathComponent)
+            // Deja dans la bibliotheque ? On jette la copie plutot que de creer un doublon.
+            if isAlreadyInLibrary(track) {
+                try? FileManager.default.removeItem(at: dest)
+                if let art = track.artworkFileName {
+                    try? FileManager.default.removeItem(at: artworkDir.appendingPathComponent(art))
+                }
+                continue
+            }
             tracks.append(track)
         }
         // Tri par date d'ajout (recent en haut).
         tracks.sort { $0.dateAdded > $1.dateAdded }
+    }
+
+    // Importe automatiquement les fichiers audio DEPOSES via iTunes/Finder
+    // (partage de fichiers) a la racine de Documents. Les fichiers sont
+    // DEPLACES (pas copies) vers le stockage interne : aucun doublon possible.
+    // Les morceaux deja presents dans la bibliotheque sont ignores et leur
+    // copie supprimee.
+    func scanInbox() async {
+        guard !isImporting else { return }
+        let fm = FileManager.default
+        let items = (try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)) ?? []
+        let candidates = items.filter { Self.audioExtensions.contains($0.pathExtension.lowercased()) }
+        guard !candidates.isEmpty else { return }
+
+        isImporting = true
+        defer { isImporting = false; importProgress = ""; save() }
+
+        for (index, source) in candidates.enumerated() {
+            importProgress = "Import iTunes \(index + 1)/\(candidates.count)…"
+            let ext = source.pathExtension.isEmpty ? "m4a" : source.pathExtension
+            let storedName = "\(UUID().uuidString).\(ext)"
+            let dest = tracksDir.appendingPathComponent(storedName)
+            do {
+                try fm.moveItem(at: source, to: dest)
+            } catch {
+                continue
+            }
+            let track = await extractMetadata(from: dest,
+                                              storedName: storedName,
+                                              fallbackName: source.deletingPathExtension().lastPathComponent)
+            if isAlreadyInLibrary(track) {
+                try? fm.removeItem(at: dest)
+                if let art = track.artworkFileName {
+                    try? fm.removeItem(at: artworkDir.appendingPathComponent(art))
+                }
+                continue
+            }
+            tracks.append(track)
+        }
+        tracks.sort { $0.dateAdded > $1.dateAdded }
+    }
+
+    // Deux morceaux sont consideres identiques si titre + artiste correspondent
+    // (comparaison sans casse ni accents) et duree quasi egale.
+    private func sameSong(_ a: Track, _ b: Track) -> Bool {
+        Self.normalized(a.title) == Self.normalized(b.title) &&
+        Self.normalized(a.artist) == Self.normalized(b.artist) &&
+        abs(a.duration - b.duration) < 2
+    }
+
+    private func isAlreadyInLibrary(_ track: Track) -> Bool {
+        tracks.contains { $0.id != track.id && sameSong($0, track) }
+    }
+
+    // Supprime les doublons deja presents dans la bibliotheque. Pour chaque
+    // groupe identique, garde le plus ancien et fusionne dessus favori,
+    // paroles, pochette et appartenance aux playlists. Retourne le nombre
+    // de doublons supprimes.
+    @discardableResult
+    func removeDuplicateTracks() -> Int {
+        var kept: [Track] = []
+        var removedCount = 0
+        for track in tracks.sorted(by: { $0.dateAdded < $1.dateAdded }) {
+            guard let original = kept.first(where: { sameSong($0, track) }) else {
+                kept.append(track)
+                continue
+            }
+            // Fusion vers l'original.
+            if let oi = tracks.firstIndex(where: { $0.id == original.id }) {
+                if track.isFavorite { tracks[oi].isFavorite = true }
+                if tracks[oi].lyrics == nil { tracks[oi].lyrics = track.lyrics }
+                if tracks[oi].artworkFileName == nil { tracks[oi].artworkFileName = track.artworkFileName }
+            }
+            for i in playlists.indices {
+                while let idx = playlists[i].trackIDs.firstIndex(of: track.id) {
+                    if playlists[i].trackIDs.contains(original.id) {
+                        playlists[i].trackIDs.remove(at: idx)
+                    } else {
+                        playlists[i].trackIDs[idx] = original.id
+                    }
+                }
+            }
+            // Suppression du fichier du doublon (et de sa pochette si elle
+            // n'a pas ete transferee a l'original).
+            try? FileManager.default.removeItem(at: url(for: track))
+            if let art = track.artworkFileName,
+               tracks.first(where: { $0.id == original.id })?.artworkFileName != art {
+                try? FileManager.default.removeItem(at: artworkDir.appendingPathComponent(art))
+            }
+            tracks.removeAll { $0.id == track.id }
+            removedCount += 1
+        }
+        if removedCount > 0 { save() }
+        return removedCount
     }
 
     // Lit titre / artiste / album / pochette / paroles / duree depuis le fichier.
@@ -354,12 +524,18 @@ final class LibraryStore: ObservableObject {
         playlist.trackIDs.compactMap { id in tracks.first { $0.id == id } }
     }
 
-    // Regroupements pratiques pour l'affichage.
-    var albums: [String: [Track]] { Dictionary(grouping: tracks) { $0.album } }
+    // Regroupements pratiques pour l'affichage (mis en cache, voir plus haut).
+    var albums: [String: [Track]] {
+        if let albumsCache { return albumsCache }
+        let grouped = Dictionary(grouping: tracks) { $0.album }
+        albumsCache = grouped
+        return grouped
+    }
 
     // Un morceau a plusieurs artistes apparait sous CHACUN d'eux.
     // Regroupement insensible a la casse ("rihanna" et "Rihanna" fusionnent).
     var artists: [String: [Track]] {
+        if let artistsCache { return artistsCache }
         var canonical: [String: String] = [:]   // cle normalisee -> nom affiche
         var dict: [String: [Track]] = [:]
         for track in tracks {
@@ -370,6 +546,7 @@ final class LibraryStore: ObservableObject {
                 dict[display, default: []].append(track)
             }
         }
+        artistsCache = dict
         return dict
     }
 }

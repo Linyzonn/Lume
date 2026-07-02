@@ -7,20 +7,23 @@ enum LumeTheme {
 }
 
 // Pochette d'album reutilisable. Affiche une jolie pochette par defaut si absente.
+// La miniature est chargee EN ARRIERE-PLAN (et mise en cache) : l'ancienne
+// version relisait et decodait le fichier image sur le thread principal a
+// chaque affichage de ligne, ce qui saccadait le defilement des listes.
 struct ArtworkView: View {
     let track: Track?
     var size: CGFloat = 56
     var corner: CGFloat = 8
     @EnvironmentObject var library: LibraryStore
+    @State private var image: UIImage?
 
     var body: some View {
-        Group {
-            if let track, let image = library.artworkImage(for: track) {
+        ZStack {
+            placeholder
+            if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-            } else {
-                placeholder
             }
         }
         .frame(width: size, height: size)
@@ -29,6 +32,14 @@ struct ArtworkView: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
         )
+        .task(id: track?.artworkFileName) {
+            guard let track, track.artworkFileName != nil else { image = nil; return }
+            let target = size * UIScreen.main.scale
+            let lib = library
+            image = await Task.detached(priority: .userInitiated) {
+                lib.thumbnail(for: track, pixelSize: target)
+            }.value
+        }
     }
 
     private var placeholder: some View {

@@ -5,6 +5,7 @@ struct NowPlayingView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var sleepTimer: SleepTimer
 
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
@@ -100,7 +101,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v13")
+            Text("v14")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
@@ -268,10 +269,36 @@ struct NowPlayingView: View {
         HStack(spacing: 44) {
             Button { showLyrics = true } label: { Image(systemName: "quote.bubble") }
             Button { showEQ = true } label: { Image(systemName: "slider.vertical.3") }
+            sleepTimerMenu
             Button { showQueue = true } label: { Image(systemName: "list.bullet") }
         }
         .font(.title3)
         .foregroundStyle(.white.opacity(0.8))
+    }
+
+    // Minuterie de sommeil (utilise le SleepTimer partage de l'app).
+    private var sleepTimerMenu: some View {
+        Menu {
+            if sleepTimer.isActive {
+                Button(role: .destructive) {
+                    sleepTimer.cancel()
+                } label: {
+                    Label("Désactiver la minuterie", systemImage: "moon.zzz")
+                }
+                Divider()
+            }
+            ForEach([15, 30, 45, 60, 90], id: \.self) { minutes in
+                Button("\(minutes) minutes") {
+                    sleepTimer.start(minutes: minutes)
+                }
+            }
+            Button("Fin du morceau en cours") {
+                sleepTimer.start(minutes: 0, endOfTrack: true)
+            }
+        } label: {
+            Image(systemName: sleepTimer.isActive ? "moon.fill" : "moon")
+                .foregroundStyle(sleepTimer.isActive ? LumeTheme.accent : Color.white.opacity(0.8))
+        }
     }
 
     private func cycleRepeat() {

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var library: LibraryStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showNowPlaying = false
 
     var body: some View {
@@ -28,6 +30,15 @@ struct RootView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: engine.currentTrack)
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingView(isPresented: $showNowPlaying)
+        }
+        // Import automatique des fichiers deposes via iTunes/Finder :
+        // au lancement, puis a chaque retour au premier plan (ex. apres
+        // une synchronisation iTunes pendant que l'app etait en fond).
+        .task { await library.scanInbox() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                Task { await library.scanInbox() }
+            }
         }
     }
 }
