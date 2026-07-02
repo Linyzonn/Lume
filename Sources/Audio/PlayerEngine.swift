@@ -64,6 +64,8 @@ final class PlayerEngine: ObservableObject {
         case normal = "Normal"
         case headphones = "Casque"
         case speaker = "Haut-parleur"
+        case plane = "Avion"
+        case car = "Voiture"
         case concert = "Concert"
         case voice = "Voix / Podcast"
         var id: String { rawValue }
@@ -72,6 +74,8 @@ final class PlayerEngine: ObservableObject {
             case .normal:     return "circle"
             case .headphones: return "headphones"
             case .speaker:    return "iphone.gen3"
+            case .plane:      return "airplane"
+            case .car:        return "car.fill"
             case .concert:    return "music.mic"
             case .voice:      return "waveform.badge.mic"
             }
@@ -87,9 +91,23 @@ final class PlayerEngine: ObservableObject {
             case .speaker:
                 // Petit HP d'iPhone : on coupe le sub inutile, on pousse clarte et presence.
                 return ([-6,-4,-1,0,1,2,3,3,2,1], true, 0, .off, 0)
+            case .plane:
+                // Avion + casque antibruit : le grondement residuel des reacteurs
+                // (bruit grave que meme l'ANC ne supprime pas totalement) masque
+                // les basses et le bas-medium. On compense : graves renforces,
+                // creux vers 250 Hz (zone du grondement), presence vocale relevee
+                // pour garder les voix intelligibles sans monter le volume.
+                return ([5,4,2,-1,0,1,2,3,2,1], true, 5, .off, 0)
+            case .car:
+                // Enceintes de voiture : le bruit de roulement mange voix et
+                // details. Basses fermes (sans exces, les voitures en ont deja),
+                // mediums/presence en avant pour la clarte a vitesse de croisiere.
+                return ([2,3,1,0,1,2,3,3,2,1], true, 3, .off, 0)
             case .concert:
-                // Sensation live : basses pleines + grande salle.
-                return ([5,4,2,1,0,0,1,2,3,3], true, 7, .concert, 45)
+                // Sensation live SUBTILE : leger renfort des graves et de l'air,
+                // petite salle a faible dose. (L'ancien reglage — grande salle a
+                // 45 % — noyait tout dans l'echo.)
+                return ([3,2,1,0,0,0,1,2,2,2], true, 4, .hall, 18)
             case .voice:
                 // Parole nette : medianes en avant, extremes attenues.
                 return ([-4,-3,-1,1,3,3,2,1,-1,-2], true, 0, .room, 12)
@@ -119,7 +137,10 @@ final class PlayerEngine: ObservableObject {
     // Format de travail commun a tout l'etage partage (la sortie convertira si besoin).
     private let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
     private let subMixer = AVAudioMixerNode()                 // somme les deux lecteurs
-    private let bassBoost = AVAudioUnitEQ(numberOfBands: 1)   // filtre low-shelf
+    // Optimiseur de basses a DEUX bandes : un plateau bas (assise) + une bosse
+    // vers 60 Hz (punch). L'ancienne version (un seul plateau a 110 Hz) etait
+    // peu audible a faible reglage et saturait a fort reglage.
+    private let bassBoost = AVAudioUnitEQ(numberOfBands: 2)
     private let reverb = AVAudioUnitReverb()                  // ambiance / concert
     private var files: [AVAudioFile?] = [nil, nil]
     private var startFrames: [AVAudioFramePosition] = [0, 0]
@@ -148,11 +169,19 @@ final class PlayerEngine: ObservableObject {
         engine.attach(bassBoost)
         engine.attach(reverb)
 
-        let bass = bassBoost.bands[0]
-        bass.filterType = .lowShelf
-        bass.frequency = 110
-        bass.gain = 0
-        bass.bypass = false
+        // Assise : plateau bas (tout ce qui est sous ~100 Hz est renforce).
+        let shelf = bassBoost.bands[0]
+        shelf.filterType = .lowShelf
+        shelf.frequency = 100
+        shelf.gain = 0
+        shelf.bypass = false
+        // Punch : bosse centree sur 62 Hz (le "coup" du kick et de la basse).
+        let punch = bassBoost.bands[1]
+        punch.filterType = .parametric
+        punch.frequency = 62
+        punch.bandwidth = 1.2
+        punch.gain = 0
+        punch.bypass = false
 
         reverb.loadFactoryPreset(.mediumHall)
         reverb.wetDryMix = 0   // sec par defaut (aucun effet)
@@ -198,7 +227,13 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func applyBass() {
-        bassBoost.bands[0].gain = bassBoostEnabled ? bassBoostAmount : 0
+        let amount = bassBoostEnabled ? bassBoostAmount : 0
+        bassBoost.bands[0].gain = amount           // assise (plateau bas)
+        bassBoost.bands[1].gain = amount * 0.6     // punch (bosse ~60 Hz)
+        // Marge de securite : on abaisse legerement le niveau global du filtre
+        // pour eviter que les graves renforces ne fassent saturer la sortie
+        // (c'etait la cause du son "sale" a fort boost).
+        bassBoost.globalGain = -amount * 0.3
     }
 
     // Amplifie la sortie au-dela de 100 % (1.0 = normal, 1.5 = +50 %).

@@ -158,14 +158,45 @@ final class LibraryStore: ObservableObject {
         // "[Clip Officiel]", "(Lyrics)", etc. polluent le titre affiche.
         title = Self.cleanedTitle(title)
 
-        // Heuristique pour les fichiers YouTube : le tag artiste est souvent absent,
-        // mais le titre est au format "ARTISTE - TITRE". On separe alors les deux.
-        if artist == "Artiste inconnu", let range = title.range(of: " - ") {
+        // Heuristique "ARTISTE - TITRE" (typique des fichiers YouTube) :
+        //  - si l'artiste est inconnu, la partie gauche devient l'artiste ;
+        //  - si l'artiste est connu ET que la partie gauche lui correspond
+        //    (ex. titre "JAY-Z - Run This Town", tag artiste "JAY-Z"), on retire
+        //    le prefixe du titre. Si la gauche contient l'artiste + d'autres noms,
+        //    on garde la version la plus complete comme artiste.
+        if let range = title.range(of: " - ") {
             let left = String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
             let right = String(title[range.upperBound...]).trimmingCharacters(in: .whitespaces)
             if !left.isEmpty, !right.isEmpty {
-                artist = left
-                title = right
+                let normLeft = Self.normalized(left)
+                let normArtist = Self.normalized(artist)
+                if artist == "Artiste inconnu" {
+                    artist = left
+                    title = right
+                } else if normLeft == normArtist {
+                    title = right
+                } else if normLeft.contains(normArtist) {
+                    artist = left      // gauche = artiste principal + collaborateurs
+                    title = right
+                } else if normArtist.contains(normLeft) {
+                    title = right      // le tag artiste est deja plus complet
+                }
+            }
+        }
+
+        // "feat. / ft. / featuring" restes dans le titre -> deplaces vers l'artiste.
+        // "Run This Town ft. Rihanna, Kanye West" -> titre "Run This Town",
+        // artiste complete avec "Rihanna, Kanye West".
+        let (strippedTitle, featured) = Self.extractFeaturedArtists(from: title)
+        title = strippedTitle
+        if !featured.isEmpty {
+            if artist == "Artiste inconnu" {
+                artist = featured.joined(separator: ", ")
+            } else {
+                let normArtist = Self.normalized(artist)
+                for name in featured where !normArtist.contains(Self.normalized(name)) {
+                    artist += ", \(name)"
+                }
             }
         }
 
@@ -212,6 +243,45 @@ final class LibraryStore: ObservableObject {
             if tracks[i].artworkFileName == nil { tracks[i].artworkFileName = fresh.artworkFileName }
             if tracks[i].lyrics == nil { tracks[i].lyrics = fresh.lyrics }
         }
+    }
+
+    // Comparaison souple : minuscules + sans accents ("JAŸ-Z" == "jay-z").
+    static func normalized(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    // Extrait les artistes en featuring d'un titre.
+    // "Run This Town ft. Rihanna, Kanye West" -> ("Run This Town", ["Rihanna", "Kanye West"])
+    // "Song (feat. X & Y)" -> ("Song", ["X", "Y"])
+    static func extractFeaturedArtists(from title: String) -> (String, [String]) {
+        let pattern = #"(?i)\s*[\(\[]?\s*\b(?:feat\.?|ft\.?|featuring|avec)\s+([^\)\]]+?)[\)\]]?\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return (title, []) }
+        let full = NSRange(title.startIndex..., in: title)
+        guard let m = regex.firstMatch(in: title, range: full),
+              let matchRange = Range(m.range, in: title),
+              let capture = Range(m.range(at: 1), in: title) else { return (title, []) }
+
+        let names = String(title[capture])
+            .replacingOccurrences(of: #"(?i)\s*(?:,|;|&|\bet\b|\band\b|\sx\s)\s*"#,
+                                  with: "\u{1}", options: .regularExpression)
+            .components(separatedBy: "\u{1}")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        var cleaned = title
+        cleaned.removeSubrange(matchRange)
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: " -–—("))
+            .trimmingCharacters(in: .whitespaces)
+        return (cleaned.isEmpty ? title : cleaned, names)
+    }
+
+    // MARK: - Paroles
+
+    func setLyrics(_ lyrics: String?, for track: Track) {
+        guard let i = tracks.firstIndex(where: { $0.id == track.id }) else { return }
+        tracks[i].lyrics = lyrics
+        save()
     }
 
     private func saveArtwork(_ data: Data) -> String? {
@@ -286,7 +356,22 @@ final class LibraryStore: ObservableObject {
 
     // Regroupements pratiques pour l'affichage.
     var albums: [String: [Track]] { Dictionary(grouping: tracks) { $0.album } }
-    var artists: [String: [Track]] { Dictionary(grouping: tracks) { $0.artist } }
+
+    // Un morceau a plusieurs artistes apparait sous CHACUN d'eux.
+    // Regroupement insensible a la casse ("rihanna" et "Rihanna" fusionnent).
+    var artists: [String: [Track]] {
+        var canonical: [String: String] = [:]   // cle normalisee -> nom affiche
+        var dict: [String: [Track]] = [:]
+        for track in tracks {
+            for name in track.artistList {
+                let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                let display = canonical[key] ?? name
+                canonical[key] = display
+                dict[display, default: []].append(track)
+            }
+        }
+        return dict
+    }
 }
 
 // Petit utilitaire de redimensionnement d'image.
