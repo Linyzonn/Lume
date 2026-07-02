@@ -67,10 +67,21 @@ struct NowPlayingView: View {
             LinearGradient(colors: [bgTop, bgBottom], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
             if let track = engine.currentTrack, let img = library.artworkImage(for: track) {
-                Image(uiImage: img)
-                    .resizable().scaledToFill()
-                    .blur(radius: 90).opacity(0.35)
-                    .ignoresSafeArea()
+                // CRITIQUE : une Image .scaledToFill() SANS frame ni clip prend la
+                // taille necessaire pour couvrir (ex. 852x852 pour une pochette
+                // carree sur un ecran 393x852) et GONFLE toute la mise en page :
+                // titre pousse hors ecran a gauche, barres qui debordent, etc.
+                // On la contraint donc exactement a la taille de l'ecran.
+                GeometryReader { geo in
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .blur(radius: 90)
+                        .opacity(0.35)
+                }
+                .ignoresSafeArea()
             }
             // Voile sombre progressif : garantit que titre / temps / boutons (texte blanc)
             // restent lisibles meme quand la pochette est tres claire (ex. fond blanc).
@@ -89,7 +100,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v11")
+            Text("v12")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
