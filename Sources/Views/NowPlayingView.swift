@@ -6,6 +6,7 @@ struct NowPlayingView: View {
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var sleepTimer: SleepTimer
+    @State private var selectedArtist: SelectedArtist?
 
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
@@ -43,6 +44,9 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showLyrics) { LyricsView() }
         .sheet(isPresented: $showEQ) { EqualizerView() }
+        .sheet(item: $selectedArtist) { artist in
+            ArtistTracksSheet(artistName: artist.name)
+        }
     }
 
     // MARK: - Fermeture par glissement (coordonnees globales => pas de tremblement)
@@ -101,7 +105,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v14")
+            Text("v15")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
@@ -143,12 +147,28 @@ struct NowPlayingView: View {
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text(displayArtist)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Artiste(s) cliquable(s) : ouvre le dossier de l'artiste.
+                // S'il y en a plusieurs, un menu propose de choisir lequel.
+                Group {
+                    let names = engine.currentTrack?.artistList ?? []
+                    if names.count > 1 {
+                        Menu {
+                            ForEach(names, id: \.self) { name in
+                                Button {
+                                    selectedArtist = SelectedArtist(name: name)
+                                } label: {
+                                    Label(name, systemImage: "music.mic")
+                                }
+                            }
+                        } label: { artistLabel }
+                    } else {
+                        Button {
+                            if let name = names.first { selectedArtist = SelectedArtist(name: name) }
+                        } label: { artistLabel }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .layoutPriority(1)
             if let track = engine.currentTrack {
@@ -170,6 +190,25 @@ struct NowPlayingView: View {
         // "Tyler, The Creator" -> "Tyler +1", "Earth, Wind & Fire" -> "Earth +2".
         let a = (engine.currentTrack?.artist ?? "").trimmingCharacters(in: .whitespaces)
         return a.isEmpty ? "Artiste inconnu" : a
+    }
+
+    // Nom d'artiste + petit chevron indiquant qu'il est cliquable.
+    private var artistLabel: some View {
+        HStack(spacing: 5) {
+            Text(displayArtist)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+    }
+
+    struct SelectedArtist: Identifiable {
+        let name: String
+        var id: String { name }
     }
 
     // MARK: - Barre de progression (maison, fiable)

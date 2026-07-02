@@ -6,6 +6,9 @@ struct SettingsView: View {
     @EnvironmentObject var sleepTimer: SleepTimer
     @State private var showSleepOptions = false
     @State private var duplicatesRemoved: Int?
+    @State private var artworkFound: Int?
+    @State private var artistPhotosFound: Int?
+    @AppStorage("resumeOnLaunch") private var resumeOnLaunch = false
 
     var body: some View {
         NavigationStack {
@@ -82,14 +85,44 @@ struct SettingsView: View {
                         Label("Nettoyer les doublons", systemImage: "doc.on.doc")
                     }
                     .disabled(library.isImporting)
+                    Button {
+                        Task { artworkFound = await library.fetchMissingArtwork() }
+                    } label: {
+                        Label("Récupérer les pochettes manquantes", systemImage: "photo.badge.arrow.down")
+                    }
+                    .disabled(library.isImporting)
+                    Button {
+                        Task { artistPhotosFound = await library.fetchAllArtistImages() }
+                    } label: {
+                        Label("Récupérer les photos d'artistes", systemImage: "person.crop.circle.badge.plus")
+                    }
+                    .disabled(library.isImporting)
                 } header: {
                     Text("Bibliothèque")
                 } footer: {
                     Text("Astuce : dépose des fichiers audio dans « Documents Lume » via iTunes/Finder, ils sont importés automatiquement à l'ouverture de l'app. « Nettoyer les doublons » fusionne les morceaux identiques (favoris, paroles et playlists sont conservés).")
                 }
 
+                // Reprise de session.
                 Section {
-                    LabeledContent("Version", value: "1.6 (v14)")
+                    Toggle(isOn: $resumeOnLaunch) {
+                        Label("Reprendre où j'en étais", systemImage: "memories")
+                    }
+                } footer: {
+                    Text("Au lancement, l'app recharge ta dernière file d'attente et ta position dans le morceau, en pause.")
+                }
+
+                // Statistiques.
+                Section {
+                    NavigationLink {
+                        StatsView()
+                    } label: {
+                        Label("Statistiques d'écoute", systemImage: "chart.bar.fill")
+                    }
+                }
+
+                Section {
+                    LabeledContent("Version", value: "1.7 (v15)")
                 } footer: {
                     Text("Lume — lecteur de musique local. Tes fichiers restent sur ton iPhone, aucune connexion requise.")
                 }
@@ -104,6 +137,22 @@ struct SettingsView: View {
                 Text((duplicatesRemoved ?? 0) == 0
                      ? "Aucun doublon trouvé, ta bibliothèque est propre."
                      : "\(duplicatesRemoved ?? 0) doublon(s) supprimé(s).")
+            }
+            .alert("Pochettes", isPresented: Binding(
+                get: { artworkFound != nil },
+                set: { if !$0 { artworkFound = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("\(artworkFound ?? 0) pochette(s) trouvée(s) en ligne.")
+            }
+            .alert("Photos d'artistes", isPresented: Binding(
+                get: { artistPhotosFound != nil },
+                set: { if !$0 { artistPhotosFound = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("\(artistPhotosFound ?? 0) photo(s) d'artiste trouvée(s).")
             }
             .confirmationDialog("Minuteur de sommeil", isPresented: $showSleepOptions, titleVisibility: .visible) {
                 ForEach([10, 15, 30, 45, 60, 90], id: \.self) { minutes in

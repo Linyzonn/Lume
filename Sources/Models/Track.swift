@@ -41,6 +41,15 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+// MARK: - Statistiques d'ecoute d'un morceau (stockees a part dans stats.json)
+
+struct TrackStats: Codable {
+    var plays = 0                 // ecoutes completes (ou > 80 %)
+    var skips = 0                 // fois passe avant la fin
+    var seconds: Double = 0       // temps total d'ecoute
+    var lastPlayed: Date?
+}
+
 // MARK: - Decoupage multi-artistes
 
 extension Track {

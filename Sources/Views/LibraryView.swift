@@ -6,7 +6,18 @@ struct LibraryView: View {
     @EnvironmentObject var engine: PlayerEngine
 
     enum Tab: String, CaseIterable { case songs = "Titres", albums = "Albums", artists = "Artistes", favorites = "Favoris" }
+    // Ordre de tri de la liste des titres (memorise entre les lancements).
+    enum SongsSort: String, CaseIterable {
+        case recent = "Plus récents"
+        case title = "Titre (A → Z)"
+        case artist = "Artiste (A → Z)"
+        case duration = "Durée"
+        case mostPlayed = "Plus écoutés"
+    }
+    @AppStorage("songsSort") private var songsSortRaw = SongsSort.recent.rawValue
+    private var songsSort: SongsSort { SongsSort(rawValue: songsSortRaw) ?? .recent }
     @State private var tab: Tab = .songs
+    @State private var trackToEdit: Track?
     @State private var showImporter = false
     @State private var trackForPlaylist: Track?
 
@@ -31,10 +42,21 @@ struct LibraryView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
+                    HStack(spacing: 2) {
+                        Menu {
+                            Picker("Trier par", selection: $songsSortRaw) {
+                                ForEach(SongsSort.allCases, id: \.rawValue) { sort in
+                                    Text(sort.rawValue).tag(sort.rawValue)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                        }
+                        Button {
+                            showImporter = true
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                        }
                     }
                 }
             }
@@ -47,6 +69,9 @@ struct LibraryView: View {
             }
             .sheet(item: $trackForPlaylist) { track in
                 AddToPlaylistSheet(track: track)
+            }
+            .sheet(item: $trackToEdit) { track in
+                EditTrackSheet(track: track)
             }
             .overlay {
                 if library.isImporting {
@@ -72,10 +97,35 @@ struct LibraryView: View {
             .padding(.bottom, 8)
 
             switch tab {
-            case .songs:     songsList(library.tracks)
-            case .favorites: songsList(library.favorites)
+            case .songs:     songsList(sorted(library.tracks))
+            case .favorites: songsList(sorted(library.favorites))
             case .albums:    albumsList
             case .artists:   artistsList
+            }
+        }
+    }
+
+    // Applique l'ordre de tri choisi.
+    private func sorted(_ tracks: [Track]) -> [Track] {
+        switch songsSort {
+        case .recent:
+            return tracks.sorted { $0.dateAdded > $1.dateAdded }
+        case .title:
+            return tracks.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        case .artist:
+            return tracks.sorted {
+                $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending
+            }
+        case .duration:
+            return tracks.sorted { $0.duration > $1.duration }
+        case .mostPlayed:
+            return tracks.sorted {
+                let a = library.stats[$0.id]?.plays ?? 0
+                let b = library.stats[$1.id]?.plays ?? 0
+                if a != b { return a > b }
+                return ($0.title) < ($1.title)
             }
         }
     }
@@ -136,9 +186,7 @@ struct LibraryView: View {
                     CollectionDetailView(title: artist, tracks: artistTracks)
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: "person.crop.circle.fill")
-                            .font(.system(size: 40))
-                            .foregroundStyle(LumeTheme.accent.gradient)
+                        ArtistAvatarView(name: artist, size: 44)
                         VStack(alignment: .leading) {
                             Text(artist).lineLimit(1)
                             Text("\(artistTracks.count) titre\(artistTracks.count > 1 ? "s" : "")")
@@ -159,6 +207,9 @@ struct LibraryView: View {
         Button {
             trackForPlaylist = track
         } label: { Label("Ajouter à une playlist", systemImage: "text.badge.plus") }
+        Button {
+            trackToEdit = track
+        } label: { Label("Modifier les infos", systemImage: "pencil") }
         Button {
             library.toggleFavorite(track)
         } label: { Label("Favori", systemImage: "heart") }

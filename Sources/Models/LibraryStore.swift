@@ -12,6 +12,13 @@ final class LibraryStore: ObservableObject {
     @Published var isImporting = false
     @Published var importProgress: String = ""
 
+    // Statistiques d'ecoute, stockees SEPAREMENT de la bibliotheque
+    // (fichier stats.json) pour ne jamais mettre en peril tes donnees.
+    @Published var stats: [UUID: TrackStats] = [:]
+    @Published var dailyListening: [String: Double] = [:]   // "2026-07-02" -> secondes
+    // Incremente quand une photo d'artiste est telechargee (rafraichit les vues).
+    @Published var artistImagesVersion = 0
+
     // Dossiers de stockage.
     // - `docs` (Documents) est VISIBLE dans iTunes/Finder : il sert uniquement
     //   de boite de depot pour ajouter de la musique depuis un ordinateur.
@@ -21,7 +28,9 @@ final class LibraryStore: ObservableObject {
     private let docs: URL
     private let tracksDir: URL
     private let artworkDir: URL
+    private let artistImagesDir: URL
     private let libraryFile: URL
+    private let statsFile: URL
 
     // Caches de regroupement (recalcules uniquement quand la liste change) :
     // sans eux, chaque ligne de l'onglet Artistes recalculait TOUT le
@@ -41,12 +50,16 @@ final class LibraryStore: ObservableObject {
             .appendingPathComponent("Lume", isDirectory: true)
         tracksDir = support.appendingPathComponent("Tracks", isDirectory: true)
         artworkDir = support.appendingPathComponent("Artwork", isDirectory: true)
+        artistImagesDir = support.appendingPathComponent("ArtistImages", isDirectory: true)
         libraryFile = support.appendingPathComponent("library.json")
+        statsFile = support.appendingPathComponent("stats.json")
 
         try? fm.createDirectory(at: tracksDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: artworkDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: artistImagesDir, withIntermediateDirectories: true)
         migrateFromDocumentsIfNeeded()
         load()
+        loadStats()
     }
 
     // Migration depuis les anciennes versions ou tout vivait dans Documents.
@@ -416,7 +429,8 @@ final class LibraryStore: ObservableObject {
     }
 
     // Comparaison souple : minuscules + sans accents ("JAŸ-Z" == "jay-z").
-    static func normalized(_ s: String) -> String {
+    // nonisolated : utilisee aussi depuis les taches d'arriere-plan (photos).
+    nonisolated static func normalized(_ s: String) -> String {
         s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             .trimmingCharacters(in: .whitespaces)
     }
@@ -452,6 +466,158 @@ final class LibraryStore: ObservableObject {
         guard let i = tracks.firstIndex(where: { $0.id == track.id }) else { return }
         tracks[i].lyrics = lyrics
         save()
+    }
+
+    // MARK: - Edition manuelle des metadonnees
+
+    func updateMetadata(for track: Track, title: String, artist: String, album: String) {
+        guard let i = tracks.firstIndex(where: { $0.id == track.id }) else { return }
+        let t = title.trimmingCharacters(in: .whitespaces)
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        let al = album.trimmingCharacters(in: .whitespaces)
+        if !t.isEmpty { tracks[i].title = t }
+        tracks[i].artist = a.isEmpty ? "Artiste inconnu" : a
+        tracks[i].album = al.isEmpty ? "Album inconnu" : al
+        save()
+    }
+
+    // MARK: - Statistiques d'ecoute
+
+    private struct StatsData: Codable {
+        var perTrack: [UUID: TrackStats]
+        var daily: [String: Double]
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    static func dayKey(_ date: Date = Date()) -> String { dayFormatter.string(from: date) }
+
+    private func loadStats() {
+        guard let data = try? Data(contentsOf: statsFile),
+              let decoded = try? JSONDecoder().decode(StatsData.self, from: data) else { return }
+        stats = decoded.perTrack
+        dailyListening = decoded.daily
+    }
+
+    private func saveStats() {
+        let data = StatsData(perTrack: stats, daily: dailyListening)
+        if let encoded = try? JSONEncoder().encode(data) {
+            try? encoded.write(to: statsFile, options: .atomic)
+        }
+    }
+
+    // Une ecoute complete (fin naturelle du morceau, ou > 80 % ecoute).
+    func recordPlay(_ trackID: UUID) {
+        stats[trackID, default: TrackStats()].plays += 1
+        stats[trackID]?.lastPlayed = Date()
+        saveStats()
+    }
+
+    // Morceau passe volontairement avant la fin -> signal "j'aime moins".
+    func recordSkip(_ trackID: UUID) {
+        stats[trackID, default: TrackStats()].skips += 1
+        saveStats()
+    }
+
+    // Temps d'ecoute accumule (envoye par paquets par le moteur).
+    func recordListening(_ trackID: UUID, seconds: Double) {
+        guard seconds > 0.5 else { return }
+        stats[trackID, default: TrackStats()].seconds += seconds
+        dailyListening[Self.dayKey(), default: 0] += seconds
+        saveStats()
+    }
+
+    // MARK: - Pochettes en ligne (iTunes)
+
+    // Cherche et enregistre la pochette d'un morceau. Retourne true si trouvee.
+    @discardableResult
+    func fetchArtworkOnline(for track: Track) async -> Bool {
+        let mainArtist = track.artistList.first ?? track.artist
+        guard let data = await ITunesArtwork.fetchArtworkData(title: track.title, artist: mainArtist),
+              let name = saveArtwork(data),
+              let i = tracks.firstIndex(where: { $0.id == track.id }) else { return false }
+        tracks[i].artworkFileName = name
+        save()
+        return true
+    }
+
+    // Recupere toutes les pochettes manquantes. Retourne le nombre trouve.
+    func fetchMissingArtwork() async -> Int {
+        guard !isImporting else { return 0 }
+        isImporting = true
+        defer { isImporting = false; importProgress = "" }
+        let missing = tracks.filter { $0.artworkFileName == nil }
+        var found = 0
+        for (index, track) in missing.enumerated() {
+            importProgress = "Pochettes \(index + 1)/\(missing.count)…"
+            if await fetchArtworkOnline(for: track) { found += 1 }
+        }
+        return found
+    }
+
+    // MARK: - Photos d'artistes (Deezer)
+
+    private nonisolated func artistImageFile(for name: String) -> URL {
+        let slug = Self.normalized(name)
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
+        return artistImagesDir.appendingPathComponent("\(slug).jpg")
+    }
+
+    nonisolated func artistImage(named name: String, pixelSize: CGFloat) -> UIImage? {
+        let key = "artist#\(Self.normalized(name))#\(Int(pixelSize))" as NSString
+        if let cached = thumbCache.object(forKey: key) { return cached }
+        guard let data = try? Data(contentsOf: artistImageFile(for: name)),
+              let image = UIImage(data: data) else { return nil }
+        let thumb = image.resized(maxDimension: pixelSize)
+        thumbCache.setObject(thumb, forKey: key)
+        return thumb
+    }
+
+    func hasArtistImage(_ name: String) -> Bool {
+        FileManager.default.fileExists(atPath: artistImageFile(for: name).path)
+    }
+
+    // Telecharge la photo d'un artiste depuis Deezer. Retourne true si trouvee.
+    @discardableResult
+    func fetchArtistImage(for name: String) async -> Bool {
+        guard !hasArtistImage(name) else { return true }
+        guard let artist = await DeezerAPI.searchArtist(name),
+              Self.normalized(artist.name) == Self.normalized(name) ||
+              Self.normalized(artist.name).contains(Self.normalized(name)) ||
+              Self.normalized(name).contains(Self.normalized(artist.name)),
+              let data = await DeezerAPI.imageData(from: artist.picture_big ?? artist.picture_medium) else {
+            return false
+        }
+        try? data.write(to: artistImageFile(for: name))
+        artistImagesVersion += 1
+        return true
+    }
+
+    // Telecharge les photos manquantes de tous les artistes. Retourne le nombre trouve.
+    func fetchAllArtistImages() async -> Int {
+        guard !isImporting else { return 0 }
+        isImporting = true
+        defer { isImporting = false; importProgress = "" }
+        let names = artists.keys.filter { !hasArtistImage($0) }.sorted()
+        var found = 0
+        for (index, name) in names.enumerated() {
+            importProgress = "Photos d'artistes \(index + 1)/\(names.count)…"
+            if await fetchArtistImage(for: name) { found += 1 }
+        }
+        return found
+    }
+
+    // Tous les morceaux d'un artiste donne (correspondance sans casse ni accents).
+    func tracks(forArtist name: String) -> [Track] {
+        let key = Self.normalized(name)
+        if let match = artists.first(where: { Self.normalized($0.key) == key }) {
+            return match.value
+        }
+        return []
     }
 
     private func saveArtwork(_ data: Data) -> String? {

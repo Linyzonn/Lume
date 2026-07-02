@@ -118,6 +118,26 @@ final class PlayerEngine: ObservableObject {
     // Reference vers la bibliotheque (pour resoudre les URL de fichiers).
     weak var library: LibraryStore?
 
+    // MARK: - Remontee des statistiques d'ecoute (branchee dans RootView)
+    // Ecoute complete (fin naturelle ou > 80 % du morceau).
+    var onTrackCompleted: ((Track) -> Void)?
+    // Morceau passe volontairement avant 80 %.
+    var onTrackSkipped: ((Track) -> Void)?
+    // Paquet de secondes reellement ecoutees (envoye aux changements de piste/pause).
+    var onListenFlush: ((Track, Double) -> Void)?
+
+    // Secondes ecoutees depuis le dernier envoi (accumulees par le tic d'horloge).
+    private var listenAccumulator: Double = 0
+
+    private func flushListenTime() {
+        guard let track = currentTrack, listenAccumulator > 0.5 else {
+            listenAccumulator = 0
+            return
+        }
+        onListenFlush?(track, listenAccumulator)
+        listenAccumulator = 0
+    }
+
     // Pour le minuteur « fin du morceau » : arret apres la piste en cours.
     var stopAfterCurrentTrack = false
     var onAutoStop: (() -> Void)?
@@ -346,6 +366,7 @@ final class PlayerEngine: ObservableObject {
             players[i].play()
             isPlaying = true
             updateNowPlaying()
+            persistSession()
         }
     }
 
@@ -373,6 +394,8 @@ final class PlayerEngine: ObservableObject {
         players[activeIndex].pause()
         if isCrossfading { players[1 - activeIndex].pause() }
         isPlaying = false
+        flushListenTime()
+        persistSession()
         updateNowPlaying()
     }
 
@@ -386,6 +409,16 @@ final class PlayerEngine: ObservableObject {
 
     func next() {
         cancelCrossfade()
+        // Signal de gout : passer un morceau avant 80 % = "j'aime moins",
+        // le passer apres 80 % compte comme une ecoute complete.
+        if let track = currentTrack, duration > 0 {
+            if currentTime / duration < 0.8 {
+                onTrackSkipped?(track)
+            } else {
+                onTrackCompleted?(track)
+            }
+        }
+        flushListenTime()
         guard !queue.isEmpty else { return }
         if repeatMode == .one {
             restartCurrent()
@@ -404,6 +437,7 @@ final class PlayerEngine: ObservableObject {
 
     func previous() {
         cancelCrossfade()
+        flushListenTime()
         // Comportement classique : si on est au-dela de 3 s, on revient au debut.
         if currentTime > 3 {
             restartCurrent()
@@ -419,6 +453,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func advanceAtEnd() {
+        if let track = currentTrack { onTrackCompleted?(track) }
+        flushListenTime()
         if stopAfterCurrentTrack {
             stopPlayback()
             stopAfterCurrentTrack = false
@@ -452,6 +488,48 @@ final class PlayerEngine: ObservableObject {
         isPlaying = false
         currentTime = 0
         updateNowPlaying()
+    }
+
+    // MARK: - Reprise de session (redemarrage de l'app)
+
+    // Sauvegarde l'etat courant (file, position) pour la reprise au lancement.
+    func persistSession() {
+        let d = UserDefaults.standard
+        guard let track = currentTrack, !queue.isEmpty else {
+            d.removeObject(forKey: "session.queue")
+            return
+        }
+        d.set(queue.map { $0.id.uuidString }, forKey: "session.queue")
+        d.set(queueIndex, forKey: "session.index")
+        d.set(currentTime, forKey: "session.time")
+        d.set(track.id.uuidString, forKey: "session.trackID")
+    }
+
+    // Restaure la derniere session EN PAUSE (jamais de lecture surprise).
+    func restoreSavedSessionIfNeeded() {
+        guard currentTrack == nil, let lib = library else { return }
+        let d = UserDefaults.standard
+        guard let ids = d.stringArray(forKey: "session.queue"), !ids.isEmpty else { return }
+        let byID = Dictionary(uniqueKeysWithValues: lib.tracks.map { ($0.id.uuidString, $0) })
+        let restored = ids.compactMap { byID[$0] }
+        guard !restored.isEmpty else { return }
+        var index = d.integer(forKey: "session.index")
+        if let savedID = d.string(forKey: "session.trackID"),
+           let realIdx = restored.firstIndex(where: { $0.id.uuidString == savedID }) {
+            index = realIdx
+        }
+        guard index >= 0, index < restored.count else { return }
+        let time = d.double(forKey: "session.time")
+        let track = restored[index]
+
+        queue = restored
+        queueIndex = index
+        guard let file = try? AVAudioFile(forReading: lib.url(for: track)) else { return }
+        let sr = file.processingFormat.sampleRate
+        let frame = AVAudioFramePosition(max(0, min(time, max(0, track.duration - 2))) * sr)
+        load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true)
+        pause()
+        currentTime = Double(frame) / max(1, sr)
     }
 
     // MARK: - Recherche de position (seek)
@@ -500,6 +578,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func finishCrossfade(newPlayer: Int, track: Track) {
+        if let finished = currentTrack { onTrackCompleted?(finished) }
+        flushListenTime()
         players[activeIndex].stop()
         activeIndex = newPlayer
         currentTrack = track
@@ -556,6 +636,9 @@ final class PlayerEngine: ObservableObject {
                 // la barre a 100 % alors que la musique continue.
                 duration = t
             }
+            // Temps reellement ecoute : delta borne pour ignorer seeks et reprises.
+            let delta = t - currentTime
+            if delta > 0, delta < 2 { listenAccumulator += delta }
             currentTime = t
             lastTickDate = Date()
             checkCrossfadeAndNowPlaying()

@@ -93,3 +93,158 @@ struct AddToPlaylistSheet: View {
         }
     }
 }
+
+// MARK: - Photo d'artiste (ronde, chargee en arriere-plan, cache)
+
+struct ArtistAvatarView: View {
+    let name: String
+    var size: CGFloat = 44
+    @EnvironmentObject var library: LibraryStore
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Circle().fill(LumeTheme.accent.gradient.opacity(0.8))
+                Image(systemName: "music.mic")
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        // Recharge quand une photo est telechargee (artistImagesVersion bouge).
+        .task(id: "\(name)#\(library.artistImagesVersion)") {
+            let target = size * UIScreen.main.scale
+            let lib = library
+            let n = name
+            image = await Task.detached(priority: .userInitiated) {
+                lib.artistImage(named: n, pixelSize: target)
+            }.value
+        }
+    }
+}
+
+// MARK: - Edition manuelle des metadonnees d'un morceau
+
+struct EditTrackSheet: View {
+    let track: Track
+    @EnvironmentObject var library: LibraryStore
+    @Environment(\.dismiss) var dismiss
+
+    @State private var title = ""
+    @State private var artist = ""
+    @State private var album = ""
+    @State private var fetchingArtwork = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Titre") {
+                    TextField("Titre du morceau", text: $title)
+                }
+                Section {
+                    TextField("Artiste(s)", text: $artist)
+                } header: {
+                    Text("Artiste")
+                } footer: {
+                    Text("Sépare plusieurs artistes par des virgules : chacun aura son dossier dans l'onglet Artistes.")
+                }
+                Section("Album") {
+                    TextField("Album", text: $album)
+                }
+                Section {
+                    Button {
+                        fetchingArtwork = true
+                        Task {
+                            await library.fetchArtworkOnline(for: track)
+                            fetchingArtwork = false
+                        }
+                    } label: {
+                        if fetchingArtwork {
+                            HStack(spacing: 10) { ProgressView(); Text("Recherche…") }
+                        } else {
+                            Label("Chercher la pochette en ligne", systemImage: "photo.badge.arrow.down")
+                        }
+                    }
+                    .disabled(fetchingArtwork)
+                }
+            }
+            .navigationTitle("Modifier les infos")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") {
+                        library.updateMetadata(for: track, title: title, artist: artist, album: album)
+                        dismiss()
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear {
+                title = track.title
+                artist = track.artist
+                album = track.album
+            }
+        }
+    }
+}
+
+// MARK: - Dossier d'un artiste (ouvert depuis le lecteur)
+
+struct ArtistTracksSheet: View {
+    let artistName: String
+    @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var engine: PlayerEngine
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                let artistTracks = library.tracks(forArtist: artistName)
+                Section {
+                    HStack(spacing: 14) {
+                        ArtistAvatarView(name: artistName, size: 64)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(artistName).font(.title3.weight(.bold))
+                            Text("\(artistTracks.count) titre\(artistTracks.count > 1 ? "s" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            engine.play(tracks: artistTracks, startAt: 0)
+                        } label: {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 40))
+                                .foregroundStyle(LumeTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(artistTracks.isEmpty)
+                    }
+                    .padding(.vertical, 4)
+                }
+                Section {
+                    ForEach(artistTracks) { track in
+                        TrackRow(track: track, context: artistTracks)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle(artistName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fermer") { dismiss() }
+                }
+            }
+            .task { await library.fetchArtistImage(for: artistName) }
+        }
+    }
+}
