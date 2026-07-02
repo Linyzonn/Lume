@@ -100,7 +100,12 @@ final class LibraryStore: ObservableObject {
 
     // Lit titre / artiste / album / pochette / paroles / duree depuis le fichier.
     private func extractMetadata(from url: URL, storedName: String, fallbackName: String) async -> Track {
-        let asset = AVURLAsset(url: url)
+        // PreferPreciseDurationAndTiming : sans cette option, AVAsset ESTIME la
+        // duree des MP3/M4A a debit variable depuis l'en-tete (souvent faux sur
+        // les fichiers convertis depuis YouTube) -> ex. 3:30 affiche pour un
+        // morceau de 4:00. Avec l'option, il scanne le fichier : duree exacte.
+        let asset = AVURLAsset(url: url,
+                               options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
 
         var title = fallbackName
         var artist = "Artiste inconnu"
@@ -149,6 +154,10 @@ final class LibraryStore: ObservableObject {
             }
         }
 
+        // Nettoyage des suffixes de type YouTube : "(Official Video)",
+        // "[Clip Officiel]", "(Lyrics)", etc. polluent le titre affiche.
+        title = Self.cleanedTitle(title)
+
         // Heuristique pour les fichiers YouTube : le tag artiste est souvent absent,
         // mais le titre est au format "ARTISTE - TITRE". On separe alors les deux.
         if artist == "Artiste inconnu", let range = title.range(of: " - ") {
@@ -167,6 +176,42 @@ final class LibraryStore: ObservableObject {
                      duration: duration,
                      artworkFileName: artworkName,
                      lyrics: lyrics)
+    }
+
+    // Retire les mentions parasites du titre : (Official Video), [Clip Officiel],
+    // (Lyrics), (Audio), (Visualizer), etc.
+    static func cleanedTitle(_ raw: String) -> String {
+        let pattern = #"\s*[\(\[][^\)\]]*(official|officiel|video|vidéo|audio|lyric|parole|clip|visuali[sz]er|full\s?hd|4k|mv|hq)[^\)\]]*[\)\]]"#
+        let cleaned = raw.replacingOccurrences(of: pattern,
+                                               with: "",
+                                               options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? raw : cleaned
+    }
+
+    // Re-lit les metadonnees de TOUTE la bibliotheque (utile apres une correction
+    // du code d'import : les morceaux deja importes gardent sinon leurs anciennes
+    // donnees — titre sale, duree fausse, etc.). Conserve favoris, playlists,
+    // date d'ajout, pochette et paroles deja presentes.
+    func reanalyzeMetadata() async {
+        isImporting = true
+        defer { isImporting = false; importProgress = ""; save() }
+
+        for (index, track) in tracks.enumerated() {
+            importProgress = "Analyse \(index + 1)/\(tracks.count)…"
+            let fileURL = url(for: track)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+            let fresh = await extractMetadata(from: fileURL,
+                                              storedName: track.fileName,
+                                              fallbackName: track.title)
+            guard let i = tracks.firstIndex(where: { $0.id == track.id }) else { continue }
+            tracks[i].title = fresh.title
+            tracks[i].artist = fresh.artist
+            tracks[i].album = fresh.album
+            if fresh.duration > 0 { tracks[i].duration = fresh.duration }
+            if tracks[i].artworkFileName == nil { tracks[i].artworkFileName = fresh.artworkFileName }
+            if tracks[i].lyrics == nil { tracks[i].lyrics = fresh.lyrics }
+        }
     }
 
     private func saveArtwork(_ data: Data) -> String? {

@@ -89,7 +89,7 @@ struct NowPlayingView: View {
         .padding(.top, 10)
         .contentShape(Rectangle())
         .overlay(alignment: .center) {
-            Text("v10")
+            Text("v11")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
@@ -121,24 +121,29 @@ struct NowPlayingView: View {
     private var trackInfo: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
+                // NOTE : ne PAS remettre .fixedSize ici. Combine avec lineLimit,
+                // il faisait deborder le texte hors de l'ecran (on voyait la fin
+                // du titre depasser sur le bord gauche).
                 Text(displayTitle)
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(displayArtist)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.85))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
             if let track = engine.currentTrack {
                 FavoriteButton(track: track).font(.title2).foregroundStyle(.white)
             }
         }
+        .clipped()
         .padding(.bottom, 12)
     }
 
@@ -148,13 +153,11 @@ struct NowPlayingView: View {
     }
 
     private var displayArtist: String {
+        // On affiche l'artiste TEL QUEL. L'ancien decoupage sur "," "&" "/"
+        // massacrait les noms legitimes : "AC/DC" -> "AC +1",
+        // "Tyler, The Creator" -> "Tyler +1", "Earth, Wind & Fire" -> "Earth +2".
         let a = (engine.currentTrack?.artist ?? "").trimmingCharacters(in: .whitespaces)
-        guard !a.isEmpty else { return "Artiste inconnu" }
-        let parts = a.split(whereSeparator: { $0 == "," || $0 == "&" || $0 == "/" })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        if parts.count > 1 { return "\(parts[0]) +\(parts.count - 1)" }
-        return a
+        return a.isEmpty ? "Artiste inconnu" : a
     }
 
     // MARK: - Barre de progression (maison, fiable)
@@ -288,11 +291,19 @@ struct NowPlayingView: View {
 }
 
 // Curseur de volume systeme (enveloppe MPVolumeView).
+// Deux pieges corriges ici :
+//  1. showsRouteButton est deprecie et inserait un bouton AirPlay DANS la vue,
+//     qui ecrasait / decalait le slider dans ses 34 pt de hauteur.
+//  2. Un frame initial .zero fait parfois apparaitre le slider invisible ou
+//     mal positionne au premier affichage -> on donne un frame non nul.
 struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
-        let v = MPVolumeView(frame: .zero)
-        v.showsRouteButton = true
+        let v = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 280, height: 34))
         v.tintColor = .white
+        if let slider = v.subviews.compactMap({ $0 as? UISlider }).first {
+            slider.minimumTrackTintColor = .white
+            slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.25)
+        }
         return v
     }
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}

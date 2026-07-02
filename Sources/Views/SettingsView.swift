@@ -58,14 +58,31 @@ struct SettingsView: View {
                 }
 
                 // Bibliotheque.
-                Section("Bibliothèque") {
+                Section {
                     LabeledContent("Titres", value: "\(library.tracks.count)")
                     LabeledContent("Playlists", value: "\(library.playlists.count)")
                     LabeledContent("Favoris", value: "\(library.favorites.count)")
+                    Button {
+                        Task { await library.reanalyzeMetadata() }
+                    } label: {
+                        if library.isImporting {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text(library.importProgress.isEmpty ? "Analyse…" : library.importProgress)
+                            }
+                        } else {
+                            Label("Réanalyser les métadonnées", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(library.isImporting)
+                } header: {
+                    Text("Bibliothèque")
+                } footer: {
+                    Text("Relit titre, artiste et durée depuis les fichiers. À lancer une fois après cette mise à jour pour corriger les morceaux déjà importés.")
                 }
 
                 Section {
-                    LabeledContent("Version", value: "1.3 (v10)")
+                    LabeledContent("Version", value: "1.4 (v11)")
                 } footer: {
                     Text("Lume — lecteur de musique local. Tes fichiers restent sur ton iPhone, aucune connexion requise.")
                 }

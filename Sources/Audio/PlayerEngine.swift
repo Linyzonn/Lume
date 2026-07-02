@@ -202,8 +202,14 @@ final class PlayerEngine: ObservableObject {
     }
 
     // Amplifie la sortie au-dela de 100 % (1.0 = normal, 1.5 = +50 %).
+    // NOTE : mainMixerNode.outputVolume est PLAFONNE a 1.0 par le systeme,
+    // donc l'ancienne methode (1.0 + boost) ne faisait strictement rien.
+    // On passe par le gain global des egaliseurs (en dB), qui lui peut
+    // reellement amplifier le signal (+3,5 dB ~= +50 %).
     private func applyVolumeBoost() {
-        engine.mainMixerNode.outputVolume = 1.0 + max(0, min(0.5, volumeBoost))
+        let boost = max(0, min(0.5, volumeBoost))
+        let gainDB = Float(20.0 * log10(Double(1.0 + boost)))
+        for eq in eqs { eq.globalGain = gainDB }
     }
 
     private func applyReverb() {
@@ -494,15 +500,34 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Tic d'horloge (mise a jour du temps + declenchement crossfade)
 
     private func startTicker() {
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        // IMPORTANT : mode .common. En mode .default (celui de scheduledTimer),
+        // le timer est GELE des que l'utilisateur touche l'ecran (scroll, drag,
+        // doigt pose) -> la barre de progression semble ne jamais avancer.
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        RunLoop.main.add(t, forMode: .common)
+        ticker = t
     }
 
     private func tick() {
         guard isPlaying else { lastTickDate = nil; return }
-        // Suivi du temps par horloge murale : fiable des la premiere seconde, sans
-        // dependre de l'horloge interne du lecteur (qui n'est pas amorcee au demarrage).
+        // 1) Source fiable : l'horloge du lecteur audio lui-meme (suit exactement
+        //    ce qui sort des haut-parleurs, aucune derive possible).
+        if let t = playbackPosition() {
+            if t > duration, duration > 0 {
+                // La duree annoncee (en-tete VBR souvent faux sur les fichiers
+                // YouTube) etait sous-estimee : on l'etend au lieu de bloquer
+                // la barre a 100 % alors que la musique continue.
+                duration = t
+            }
+            currentTime = t
+            lastTickDate = Date()
+            checkCrossfadeAndNowPlaying()
+            return
+        }
+        // 2) Repli : horloge murale (utile la fraction de seconde ou le lecteur
+        //    n'a pas encore rendu son premier buffer).
         let now = Date()
         if let last = lastTickDate {
             var t = currentTime + now.timeIntervalSince(last)
@@ -510,6 +535,24 @@ final class PlayerEngine: ObservableObject {
             currentTime = t
         }
         lastTickDate = now
+        checkCrossfadeAndNowPlaying()
+    }
+
+    // Position de lecture reelle (secondes), lue sur l'horloge du player actif.
+    private func playbackPosition() -> Double? {
+        let p = players[activeIndex]
+        guard let nodeTime = p.lastRenderTime,
+              let playerTime = p.playerTime(forNodeTime: nodeTime),
+              playerTime.isSampleTimeValid,
+              playerTime.sampleRate > 0 else { return nil }
+        let played = max(0, Double(playerTime.sampleTime) / playerTime.sampleRate)
+        // Decalage de depart (apres un seek, la lecture commence a startFrame).
+        let fileSR = files[activeIndex]?.processingFormat.sampleRate ?? 0
+        let offset = fileSR > 0 ? Double(startFrames[activeIndex]) / fileSR : 0
+        return offset + played
+    }
+
+    private func checkCrossfadeAndNowPlaying() {
 
         // Declenchement du crossfade.
         if crossfadeDuration > 0, !isCrossfading, duration > 0 {
