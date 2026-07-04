@@ -46,7 +46,12 @@ struct DiscoverView: View {
                     .disabled(recommender.isLoading)
                 }
             }
-            .task { await recommender.refresh(library: library) }
+            .task {
+                // Affichage instantane des dernieres suggestions connues,
+                // puis rafraichissement en ligne si necessaire.
+                recommender.loadPersistedSections()
+                await recommender.refresh(library: library)
+            }
             .onDisappear { preview.stop() }
             .sheet(isPresented: $showWishlist) { WishlistSheet() }
         }
@@ -56,6 +61,14 @@ struct DiscoverView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 6) {
+                    if recommender.isOffline {
+                        HStack(spacing: 6) {
+                            Image(systemName: "wifi.slash")
+                            Text("Hors ligne — suggestions du \(offlineDateLabel)")
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    }
                     if let summary = recommender.profileSummary {
                         HStack(spacing: 6) {
                             Image(systemName: "person.crop.circle.badge.checkmark")
@@ -102,6 +115,15 @@ struct DiscoverView: View {
             .padding(.bottom, 70)   // espace pour le mini-lecteur
         }
         .refreshable { await recommender.refresh(library: library, force: true) }
+    }
+
+    private var offlineDateLabel: String {
+        guard let d = recommender.lastRefreshDate else { return "dernière session" }
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        f.locale = Locale(identifier: "fr_FR")
+        return f.string(from: d)
     }
 
     private var loadingState: some View {

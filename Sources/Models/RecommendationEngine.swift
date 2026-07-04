@@ -4,7 +4,7 @@ import NaturalLanguage
 
 // MARK: - Modeles de recommandation
 
-struct Recommendation: Identifiable, Equatable {
+struct Recommendation: Identifiable, Equatable, Codable {
     let id: Int                  // identifiant Deezer
     let title: String
     let artistName: String
@@ -17,8 +17,8 @@ struct Recommendation: Identifiable, Equatable {
     static func == (l: Recommendation, r: Recommendation) -> Bool { l.id == r.id }
 }
 
-struct RecommendationSection: Identifiable {
-    let id = UUID()
+struct RecommendationSection: Identifiable, Codable {
+    var id = UUID()
     let title: String
     let items: [Recommendation]
 }
@@ -44,10 +44,47 @@ final class Recommender: ObservableObject {
     @Published var sections: [RecommendationSection] = []
     @Published var isLoading = false
     @Published var message: String?
+    // true quand on affiche des suggestions rechargees du disque (pas de reseau).
+    @Published var isOffline = false
+    @Published var lastRefreshDate: Date?
     // Resume lisible du profil : genres, langues, tempo (affiche dans Decouvrir).
     @Published var profileSummary: String?
 
     private var lastRefresh: Date?
+
+    // Persistance des dernieres suggestions (mode hors-ligne de Decouvrir).
+    private struct SavedRecommendations: Codable {
+        let date: Date
+        let sections: [RecommendationSection]
+    }
+
+    private static var saveFile: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lume", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("recommendations.json")
+    }
+
+    private func persistSections() {
+        guard !sections.isEmpty else { return }
+        let saved = SavedRecommendations(date: Date(), sections: sections)
+        if let data = try? JSONEncoder().encode(saved) {
+            try? data.write(to: Self.saveFile, options: .atomic)
+        }
+    }
+
+    // Recharge les dernieres suggestions connues (affichage instantane et
+    // mode hors-ligne). Retourne true si quelque chose a ete recharge.
+    @discardableResult
+    func loadPersistedSections() -> Bool {
+        guard sections.isEmpty,
+              let data = try? Data(contentsOf: Self.saveFile),
+              let saved = try? JSONDecoder().decode(SavedRecommendations.self, from: data),
+              !saved.sections.isEmpty else { return false }
+        sections = saved.sections
+        lastRefreshDate = saved.date
+        return true
+    }
     private var genreNames: [Int: String] = [:]
     private var bpmCenter: Double?    // tempo median de tes titres preferes
 
@@ -179,11 +216,23 @@ final class Recommender: ObservableObject {
         //    puis tri : les titres proches de TON tempo passent en premier.
         newSections = await enrichWithBPM(sections: newSections, cap: 16)
 
-        sections = newSections
-        lastRefresh = Date()
         updateProfileSummary(library: library, genreName: mainGenreName)
+
         if newSections.isEmpty {
-            message = "Impossible de charger des recommandations. Vérifie ta connexion Internet, puis réessaie."
+            // Reseau indisponible (ou rien trouve) : on ressert les dernieres
+            // suggestions sauvegardees plutot qu'un ecran vide.
+            if loadPersistedSections() || !sections.isEmpty {
+                isOffline = true
+                message = nil
+            } else {
+                message = "Impossible de charger des recommandations. Vérifie ta connexion Internet, puis réessaie."
+            }
+        } else {
+            sections = newSections
+            lastRefresh = Date()
+            lastRefreshDate = Date()
+            isOffline = false
+            persistSections()
         }
     }
 

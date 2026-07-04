@@ -16,7 +16,7 @@ enum ITunesArtwork {
             URLQueryItem(name: "limit", value: "3")
         ]
         guard let url = comps.url,
-              let (data, _) = try? await URLSession.shared.data(from: url),
+              let data = await APICache.fetch(url: url, maxAge: 7 * 24 * 3600),
               let response = try? JSONDecoder().decode(SearchResponse.self, from: data) else { return nil }
         for item in response.results {
             guard let small = item.artworkUrl100 else { continue }
@@ -57,14 +57,27 @@ enum DeezerAPI {
 
     private static func get<T: Decodable>(_ urlString: String, as type: T.Type) async -> T? {
         guard let url = URL(string: urlString) else { return nil }
-        // Petite pause entre les appels : l'API Deezer limite a ~50 requetes
-        // par 5 secondes et par IP. On reste largement en dessous.
+        // 1) Cache disque 24 h : les tops, artistes proches et genres bougent
+        //    peu. Sert instantanement, sans toucher au reseau ni au quota.
+        if let cached = APICache.data(for: url, maxAge: 24 * 3600) {
+            return try? JSONDecoder().decode(T.self, from: cached)
+        }
+        // 2) Reseau, avec une petite pause anti rate-limit (l'API Deezer
+        //    limite a ~50 requetes / 5 s / IP ; on reste largement dessous).
         try? await Task.sleep(nanoseconds: 130_000_000)
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+        if let (data, response) = try? await URLSession.shared.data(for: req),
+           (response as? HTTPURLResponse)?.statusCode == 200 {
+            APICache.store(data, for: url)
+            return try? JSONDecoder().decode(T.self, from: data)
+        }
+        // 3) Echec reseau : on ressert la derniere reponse connue, meme vieille
+        //    (mode hors-ligne).
+        if let stale = APICache.data(for: url, maxAge: nil) {
+            return try? JSONDecoder().decode(T.self, from: stale)
+        }
+        return nil
     }
 
     static func searchArtist(_ name: String) async -> Artist? {

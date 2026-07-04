@@ -1,14 +1,15 @@
 name: Lume
 options:
   bundleIdPrefix: com.lume
+  developmentLanguage: fr
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
 
 settings:
   base:
-    MARKETING_VERSION: "1.8"
-    CURRENT_PROJECT_VERSION: "17"
+    MARKETING_VERSION: "1.9"
+    CURRENT_PROJECT_VERSION: "18"
     CODE_SIGN_STYLE: Manual
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGNING_ALLOWED: "NO"
@@ -30,3 +31,33 @@ targets:
         INFOPLIST_FILE: Sources/Info.plist
         ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  LumeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Lume
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lume.musicplayer.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+
+schemes:
+  Lume:
+    build:
+      targets:
+        Lume: all
+        LumeTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LumeTests
+    archive:
+      config: Release

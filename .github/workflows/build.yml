@@ -7,6 +7,32 @@ on:
     branches: [ main ]
 
 jobs:
+  # Tests unitaires (parsing artistes, metadonnees, LRC, doublons).
+  # Job SEPARE et non bloquant : si un test echoue tu le vois dans Actions,
+  # mais l'IPA se construit quand meme (les simulateurs CI sont parfois capricieux).
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+
+      - name: Generer le projet Xcode
+        run: xcodegen generate
+
+      - name: Lancer les tests unitaires
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -oE "iPhone [0-9][^(]*" | head -1 | sed 's/ *$//')
+          echo "Simulateur choisi : $DEVICE"
+          xcodebuild test \
+            -project Lume.xcodeproj \
+            -scheme Lume \
+            -destination "platform=iOS Simulator,name=$DEVICE" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
   build:
     runs-on: macos-latest
     steps:
