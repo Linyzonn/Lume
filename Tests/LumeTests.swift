@@ -4,6 +4,7 @@ import XCTest
 // Tests de la logique la plus fragile de l'app : parsing multi-artistes,
 // nettoyage des metadonnees, paroles synchronisees et fusion des doublons.
 // Executes automatiquement par GitHub Actions a chaque push (job "test").
+@MainActor
 final class LumeTests: XCTestCase {
 
     private func makeTrack(title: String,
@@ -54,7 +55,6 @@ final class LumeTests: XCTestCase {
 
     // MARK: - Nettoyage des metadonnees (LibraryStore statiques)
 
-    @MainActor
     func testCleanedTitleRemovesYouTubeSuffixes() {
         XCTAssertEqual(LibraryStore.cleanedTitle("Run This Town (Official Video)"),
                        "Run This Town")
@@ -65,7 +65,6 @@ final class LumeTests: XCTestCase {
         XCTAssertEqual(LibraryStore.cleanedTitle("Bohemian Rhapsody"), "Bohemian Rhapsody")
     }
 
-    @MainActor
     func testExtractFeaturedArtists() {
         let (title1, feats1) = LibraryStore.extractFeaturedArtists(
             from: "Run This Town ft. Rihanna, Kanye West")
@@ -114,7 +113,8 @@ final class LumeTests: XCTestCase {
         // Le refrain apparait deux fois (a 10 s et 70 s), trie chronologiquement.
         XCTAssertEqual(lines.count, 4)
         XCTAssertEqual(lines.first?.text, "Refrain")
-        XCTAssertEqual(lines.last?.time, 70.0, accuracy: 0.01)
+        let lastLine = try XCTUnwrap(lines.last)
+        XCTAssertEqual(lastLine.time, 70.0, accuracy: 0.01)
     }
 
     func testLRCParserRejectsPlainText() {
@@ -123,7 +123,6 @@ final class LumeTests: XCTestCase {
 
     // MARK: - Fusion des doublons (LibraryStore)
 
-    @MainActor
     func testRemoveDuplicatesMergesAndRemaps() {
         let store = LibraryStore()
         let old = Date(timeIntervalSinceNow: -3600)
@@ -150,7 +149,6 @@ final class LumeTests: XCTestCase {
         XCTAssertEqual(store.playlists[0].trackIDs, [original.id, unrelated.id])
     }
 
-    @MainActor
     func testRemoveDuplicatesIgnoresDifferentDurations() {
         let store = LibraryStore()
         // Meme titre/artiste mais durees eloignees (ex. version radio vs live) :
