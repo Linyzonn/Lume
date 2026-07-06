@@ -191,6 +191,9 @@ final class PlayerEngine: ObservableObject {
     private var lastPersistDate = Date.distantPast
     private var restoringSettings = false
 
+    // Reference partagee pour les commandes Siri / Raccourcis (AppIntents).
+    static weak var shared: PlayerEngine?
+
     init() {
         configureSession()
         setupEngine()
@@ -198,6 +201,7 @@ final class PlayerEngine: ObservableObject {
         observeInterruptions()
         startTicker()
         restoreAudioSettings()
+        PlayerEngine.shared = self
     }
 
     // MARK: - Mise en place du graphe audio
@@ -226,6 +230,7 @@ final class PlayerEngine: ObservableObject {
         reverb.loadFactoryPreset(.mediumHall)
         reverb.wetDryMix = 0
         timePitch.rate = 1.0
+        timePitch.bypass = true   // court-circuite a 1x (voir applyRate)
 
         for i in 0..<2 {
             engine.attach(players[i])
@@ -289,7 +294,13 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func applyRate() {
-        timePitch.rate = max(0.5, min(2.0, playbackRate))
+        let r = max(0.5, min(2.0, playbackRate))
+        timePitch.rate = r
+        // CORRECTIF : le module de vitesse traite l'audio EN CONTINU, meme a
+        // 1x, et son algorithme d'etirement temporel degrade legerement le
+        // son (voix "phasees", aigus adoucis). A vitesse normale, on le
+        // court-circuite completement -> son 100 % intact.
+        timePitch.bypass = (r == 1.0)
         updateNowPlayingElapsed()
     }
 

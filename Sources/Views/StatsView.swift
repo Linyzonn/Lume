@@ -8,6 +8,7 @@ struct StatsView: View {
 
     var body: some View {
         List {
+            recapSection
             totalsSection
             activitySection
             topTracksSection
@@ -16,6 +17,32 @@ struct StatsView: View {
         }
         .navigationTitle("Statistiques")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - Retrospective (Wrapped)
+
+    private var recapSection: some View {
+        Section {
+            NavigationLink {
+                RecapView()
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(LinearGradient(colors: [LumeTheme.accent, LumeTheme.accentSecondary],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 44, height: 44)
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.white)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Ta rétrospective").font(.headline)
+                        Text("Ton année en musique, façon Wrapped")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Totaux

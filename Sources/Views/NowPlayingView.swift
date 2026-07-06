@@ -22,6 +22,8 @@ struct NowPlayingView: View {
     // (L'ancienne version relisait et decodait le fichier image dans body a
     // CHAQUE rendu — soit 4 fois par seconde a cause de currentTime.)
     @State private var bgImage: UIImage?
+    // Enveloppe du morceau pour la barre de lecture (calculee en fond).
+    @State private var waveform: [Float]?
 
     var body: some View {
         ZStack {
@@ -45,7 +47,10 @@ struct NowPlayingView: View {
             .environment(\.colorScheme, .dark)
             .offset(y: dragOffset)
         }
-        .task(id: engine.currentTrack?.id) { await updateAmbiance() }
+        .task(id: engine.currentTrack?.id) {
+            await updateAmbiance()
+            await loadWaveform()
+        }
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showLyrics) { LyricsView() }
         .sheet(isPresented: $showEQ) { EqualizerView() }
@@ -200,6 +205,8 @@ struct NowPlayingView: View {
 
     // MARK: - Barre de progression (maison, fiable)
 
+    // MARK: - Barre de progression : forme d'onde (avec repli capsule)
+
     private var progressBar: some View {
         VStack(spacing: 6) {
             GeometryReader { geo in
@@ -207,15 +214,36 @@ struct NowPlayingView: View {
                 let value = isScrubbing ? scrubValue : engine.currentTime
                 let frac = engine.duration > 0 ? CGFloat(value / engine.duration) : 0
                 let clamped = max(0, min(1, frac))
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.25)).frame(height: 5)
-                    Capsule().fill(.white).frame(width: w * clamped, height: 5)
-                    Circle().fill(.white)
-                        .frame(width: 15, height: 15)
-                        .shadow(radius: 2)
-                        .offset(x: (w - 15) * clamped)
+                Group {
+                    if let wf = waveform {
+                        // Enveloppe du morceau : barres jouees en blanc,
+                        // restantes en transparence.
+                        Canvas { ctx, size in
+                            let n = wf.count
+                            let barW = size.width / CGFloat(n)
+                            for i in 0..<n {
+                                let h = max(3, size.height * CGFloat(wf[i]))
+                                let rect = CGRect(x: CGFloat(i) * barW + barW * 0.15,
+                                                  y: (size.height - h) / 2,
+                                                  width: barW * 0.7,
+                                                  height: h)
+                                let played = CGFloat(i) < clamped * CGFloat(n)
+                                ctx.fill(Path(roundedRect: rect, cornerRadius: barW * 0.3),
+                                         with: .color(played ? Color.white : Color.white.opacity(0.3)))
+                            }
+                        }
+                    } else {
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.25)).frame(height: 5)
+                            Capsule().fill(.white).frame(width: w * clamped, height: 5)
+                            Circle().fill(.white)
+                                .frame(width: 15, height: 15)
+                                .shadow(radius: 2)
+                                .offset(x: (w - 15) * clamped)
+                        }
+                    }
                 }
-                .frame(height: 20)
+                .frame(height: 30)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
@@ -232,7 +260,7 @@ struct NowPlayingView: View {
                         }
                 )
             }
-            .frame(height: 20)
+            .frame(height: 30)
             // VoiceOver : la barre devient un element ajustable (balayage
             // vertical = avancer / reculer de 10 secondes).
             .accessibilityElement(children: .ignore)
@@ -403,6 +431,20 @@ struct NowPlayingView: View {
         withAnimation(.easeInOut(duration: 0.6)) {
             bgTop = Color(colors.top)
             bgBottom = Color(colors.bottom)
+        }
+    }
+    // Charge (ou recupere du cache) la forme d'onde du morceau courant.
+    private func loadWaveform() async {
+        waveform = nil
+        guard let track = engine.currentTrack else { return }
+        let url = library.url(for: track)
+        let key = track.fileName
+        let wf = await Task.detached(priority: .utility) {
+            WaveformLoader.waveform(for: url, cacheKey: key)
+        }.value
+        // Le morceau a pu changer pendant le calcul.
+        if engine.currentTrack?.id == track.id {
+            withAnimation(.easeIn(duration: 0.25)) { waveform = wf }
         }
     }
 }

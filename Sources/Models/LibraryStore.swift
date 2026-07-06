@@ -55,6 +55,9 @@ final class LibraryStore: ObservableObject {
 
     // Les repertoires sont injectables : les TESTS UNITAIRES passent des
     // dossiers temporaires et ne touchent plus jamais aux vraies donnees.
+    // Reference partagee pour les commandes Siri / Raccourcis (AppIntents).
+    static weak var shared: LibraryStore?
+
     init(rootDirectory: URL? = nil, documentsDirectory: URL? = nil) {
         let fm = FileManager.default
         docs = documentsDirectory ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -72,6 +75,7 @@ final class LibraryStore: ObservableObject {
         try? fm.createDirectory(at: artworkDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: artistImagesDir, withIntermediateDirectories: true)
         migrateFromDocumentsIfNeeded()
+        LibraryStore.shared = self
 
         // Rend le dossier Lume visible dans l'app Fichiers (Sur mon iPhone).
         // iOS n'affiche parfois le dossier d'une app que s'il contient au moins
