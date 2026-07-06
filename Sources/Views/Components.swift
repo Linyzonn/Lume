@@ -248,3 +248,15 @@ struct ArtistTracksSheet: View {
         }
     }
 }
+
+// MARK: - Feuille de partage systeme (fichiers, texte, URLs)
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}

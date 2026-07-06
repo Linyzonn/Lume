@@ -28,6 +28,7 @@ struct MiniPlayerView: View {
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(engine.isPlaying ? "Pause" : "Lecture")
 
                 Button {
                     engine.next()
@@ -37,6 +38,7 @@ struct MiniPlayerView: View {
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Morceau suivant")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)

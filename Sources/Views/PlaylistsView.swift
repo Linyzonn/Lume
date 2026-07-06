@@ -8,44 +8,16 @@ struct PlaylistsView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if library.playlists.isEmpty {
-                    emptyState
-                } else {
-                    List {
-                        ForEach(library.playlists) { pl in
-                            NavigationLink {
-                                PlaylistDetailView(playlist: pl)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(LumeTheme.accent.gradient)
-                                            .frame(width: 52, height: 52)
-                                        Image(systemName: "music.note.list")
-                                            .foregroundStyle(.white)
-                                    }
-                                    VStack(alignment: .leading) {
-                                        Text(pl.name).lineLimit(1)
-                                        Text("\(pl.trackIDs.count) titre\(pl.trackIDs.count > 1 ? "s" : "")")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                            .swipeActions {
-                                Button(role: .destructive) {
-                                    library.deletePlaylist(pl)
-                                } label: { Label("Supprimer", systemImage: "trash") }
-                            }
-                        }
-                    }
-                    .listStyle(.plain)
-                }
+            List {
+                smartSection
+                userSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Playlists")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Nouvelle playlist")
                 }
             }
             .alert("Nouvelle playlist", isPresented: $showNewPlaylist) {
@@ -63,16 +35,118 @@ struct PlaylistsView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 50))
-                .foregroundStyle(LumeTheme.accent.gradient)
-            Text("Aucune playlist")
-                .font(.title3.weight(.semibold))
-            Text("Crée une playlist avec le bouton +, puis ajoute des titres depuis ta bibliothèque.")
-                .font(.subheadline).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).padding(.horizontal, 32)
+    // MARK: - Playlists intelligentes (calculees automatiquement)
+
+    private struct SmartPlaylist: Identifiable {
+        let id: String
+        let name: String
+        let icon: String
+        let tracks: [Track]
+    }
+
+    private var smartPlaylists: [SmartPlaylist] {
+        let now = Date()
+        let stats = library.stats
+
+        // Ajoutes ces 30 derniers jours.
+        let recent = library.tracks
+            .filter { now.timeIntervalSince($0.dateAdded) < 30 * 86400 }
+            .sorted { $0.dateAdded > $1.dateAdded }
+
+        // Jamais (vraiment) ecoutes.
+        let neverPlayed = library.tracks.filter {
+            let s = stats[$0.id]
+            return (s?.plays ?? 0) == 0 && (s?.seconds ?? 0) < 30
+        }
+
+        // Les 25 plus ecoutes.
+        let top = library.tracks
+            .filter { (stats[$0.id]?.plays ?? 0) > 0 }
+            .sorted { (stats[$0.id]?.plays ?? 0) > (stats[$1.id]?.plays ?? 0) }
+            .prefix(25)
+
+        // Aimes autrefois, pas reecoutes depuis 60 jours.
+        let rediscover = library.tracks.filter {
+            guard let s = stats[$0.id], s.plays > 0, let last = s.lastPlayed else { return false }
+            return now.timeIntervalSince(last) > 60 * 86400
+        }
+
+        return [
+            SmartPlaylist(id: "recent", name: "Ajoutés récemment", icon: "clock", tracks: recent),
+            SmartPlaylist(id: "top", name: "Top 25", icon: "chart.line.uptrend.xyaxis", tracks: Array(top)),
+            SmartPlaylist(id: "never", name: "Jamais écoutés", icon: "sparkles", tracks: neverPlayed),
+            SmartPlaylist(id: "rediscover", name: "À redécouvrir", icon: "arrow.counterclockwise.heart", tracks: rediscover),
+        ].filter { !$0.tracks.isEmpty }
+    }
+
+    @ViewBuilder
+    private var smartSection: some View {
+        let smart = smartPlaylists
+        if !smart.isEmpty {
+            Section {
+                ForEach(smart) { pl in
+                    NavigationLink {
+                        CollectionDetailView(title: pl.name, tracks: pl.tracks)
+                    } label: {
+                        HStack(spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(LumeTheme.accentSecondary.gradient)
+                                    .frame(width: 44, height: 44)
+                                Image(systemName: pl.icon)
+                                    .foregroundStyle(.white)
+                            }
+                            VStack(alignment: .leading) {
+                                Text(pl.name).lineLimit(1)
+                                Text("\(pl.tracks.count) titre\(pl.tracks.count > 1 ? "s" : "")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text("Playlists intelligentes")
+            } footer: {
+                Text("Générées automatiquement à partir de tes écoutes, elles se mettent à jour toutes seules.")
+            }
+        }
+    }
+
+    // MARK: - Playlists de l'utilisateur
+
+    @ViewBuilder
+    private var userSection: some View {
+        Section("Mes playlists") {
+            if library.playlists.isEmpty {
+                Text("Crée une playlist avec le bouton +, puis ajoute des titres depuis ta bibliothèque (appui long sur un morceau).")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            }
+            ForEach(library.playlists) { pl in
+                NavigationLink {
+                    PlaylistDetailView(playlist: pl)
+                } label: {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(LumeTheme.accent.gradient)
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "music.note.list")
+                                .foregroundStyle(.white)
+                        }
+                        VStack(alignment: .leading) {
+                            Text(pl.name).lineLimit(1)
+                            Text("\(pl.trackIDs.count) titre\(pl.trackIDs.count > 1 ? "s" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .swipeActions {
+                    Button(role: .destructive) {
+                        library.deletePlaylist(pl)
+                    } label: { Label("Supprimer", systemImage: "trash") }
+                }
+            }
         }
     }
 }
@@ -81,6 +155,7 @@ struct PlaylistDetailView: View {
     let playlist: Playlist
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var engine: PlayerEngine
+    @State private var showShare = false
 
     private var tracks: [Track] { library.tracks(in: playlist) }
 
@@ -117,7 +192,27 @@ struct PlaylistDetailView: View {
         }
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { EditButton() }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 12) {
+                    // Partage des FICHIERS AUDIO de la playlist : AirDrop vers
+                    // un Mac / autre iPhone, enregistrement dans Fichiers, etc.
+                    // C'est la porte de sortie de ta musique hors de l'app.
+                    if !tracks.isEmpty {
+                        Button {
+                            showShare = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("Partager les fichiers de la playlist")
+                    }
+                    EditButton()
+                }
+            }
+        }
+        .sheet(isPresented: $showShare) {
+            ShareSheet(items: tracks.map { library.url(for: $0) })
+        }
     }
 
     private func move(from: IndexSet, to: Int) {

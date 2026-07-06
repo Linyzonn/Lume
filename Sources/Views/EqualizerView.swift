@@ -21,6 +21,7 @@ struct EqualizerView: View {
             ScrollView {
                 VStack(spacing: 28) {
                     modeSection
+                    speedSection
                     boostSection
                     bassSection
                     ambianceSection
@@ -48,7 +49,10 @@ struct EqualizerView: View {
                     ForEach(PlayerEngine.ListeningMode.allCases) { mode in
                         let selected = engine.listeningMode == mode
                         Button {
-                            engine.listeningMode = mode
+                            // selectListeningMode sauvegarde d'abord les
+                            // reglages manuels (recuperables via
+                            // « Personnalisé » ci-dessous).
+                            engine.selectListeningMode(mode)
                         } label: {
                             VStack(spacing: 6) {
                                 Image(systemName: mode.icon)
@@ -66,12 +70,65 @@ struct EqualizerView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    // Retour aux derniers reglages manuels : un profil ne
+                    // detruit plus le son personnalise de l'utilisateur.
+                    if engine.hasCustomSound {
+                        Button {
+                            engine.restoreCustomSound()
+                        } label: {
+                            VStack(spacing: 6) {
+                                Image(systemName: "person.fill")
+                                    .font(.title3)
+                                Text("Personnalisé")
+                                    .font(.caption2.weight(.medium))
+                            }
+                            .frame(width: 84, height: 70)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.secondary.opacity(0.12))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 .padding(.horizontal)
             }
-            Text("Choisis un profil adapté à ton écoute. Il règle d'un coup l'égaliseur, les basses et l'ambiance.")
+            Text("Choisis un profil adapté à ton écoute. Il règle d'un coup l'égaliseur, les basses et l'ambiance. « Personnalisé » restaure tes derniers réglages manuels.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
         }
+    }
+
+    // MARK: - Vitesse de lecture
+
+    private static let speeds: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
+
+    private var speedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Vitesse de lecture", systemImage: "gauge.with.needle")
+            HStack(spacing: 10) {
+                ForEach(Self.speeds, id: \.self) { speed in
+                    let selected = engine.playbackRate == speed
+                    Button(speedLabel(speed)) {
+                        engine.playbackRate = speed
+                    }
+                    .font(.subheadline.weight(.medium).monospacedDigit())
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(
+                        Capsule().fill(selected ? AnyShapeStyle(LumeTheme.accent)
+                                                : AnyShapeStyle(Color.secondary.opacity(0.12)))
+                    )
+                    .foregroundStyle(selected ? .white : .primary)
+                    .accessibilityLabel("Vitesse \(speedLabel(speed))")
+                }
+            }
+            .padding(.horizontal)
+            Text("Pratique pour les podcasts et livres audio (la hauteur du son ne change pas). À une vitesse différente de 1x, le lecteur affiche des boutons ±15 s.")
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+        }
+    }
+
+    private func speedLabel(_ s: Float) -> String {
+        s == 1 ? "1x" : String(format: "%g", Double(s)) + "x"
     }
 
     // MARK: - Boost de volume
@@ -198,6 +255,17 @@ struct EqualizerView: View {
                             }
                         ), range: -12...12)
                         .frame(maxHeight: .infinity)
+                        // VoiceOver : chaque bande devient reglable
+                        // (balayage vertical = ±1 dB).
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Bande \(freqLabel(PlayerEngine.eqFrequencies[i])) hertz")
+                        .accessibilityValue("\(Int(engine.eqGains[i])) décibels")
+                        .accessibilityAdjustableAction { direction in
+                            var g = engine.eqGains
+                            g[i] += direction == .increment ? 1 : -1
+                            g[i] = max(-12, min(12, g[i]))
+                            engine.eqGains = g
+                        }
                         Text(freqLabel(PlayerEngine.eqFrequencies[i]))
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)

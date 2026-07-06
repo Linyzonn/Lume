@@ -1,10 +1,13 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 import MediaPlayer
 import Combine
 
 // Moteur de lecture base sur AVAudioEngine.
-// Chaine audio (x2 pour le crossfade) :  playerNode -> egaliseur -> mixer principal -> sortie
+// Chaine audio (x2 pour le crossfade / gapless) :
+//   playerNode -> egaliseur -> mixeur dedie -> sous-mixeur
+//   -> vitesse (timePitch) -> basses -> reverb -> limiteur -> mixer principal -> sortie
 @MainActor
 final class PlayerEngine: ObservableObject {
 
@@ -15,28 +18,45 @@ final class PlayerEngine: ObservableObject {
     @Published var duration: Double = 0
     @Published var queue: [Track] = []
     @Published var queueIndex = 0
-    @Published var shuffleEnabled = false
-    @Published var repeatMode: RepeatMode = .off
 
-    // Reglages.
-    @Published var crossfadeDuration: Double = 0           // 0 = desactive, jusqu'a 12 s
-    @Published var eqEnabled = false { didSet { applyEQ() } }
-    @Published var eqGains: [Float] = Array(repeating: 0, count: 10) { didSet { applyEQ() } }
+    // VRAI mode aleatoire : quand il s'active, la file est melangee UNE FOIS
+    // (Fisher-Yates) en gardant le morceau courant en tete. Avantages par
+    // rapport a l'ancien tirage au hasard a chaque piste : aucun morceau ne
+    // repasse avant que tous soient joues, « precedent » revient vraiment au
+    // morceau precedent, la file « A suivre » est exacte, et le crossfade /
+    // gapless fonctionnent aussi en aleatoire.
+    @Published var shuffleEnabled = false {
+        didSet {
+            if oldValue != shuffleEnabled { shuffleChanged() }
+            saveAudioSettings()
+        }
+    }
+    @Published var repeatMode: RepeatMode = .off {
+        didSet { invalidatePreload(); saveAudioSettings() }
+    }
+
+    // Reglages (tous persistes entre les lancements, voir saveAudioSettings).
+    @Published var crossfadeDuration: Double = 0 { didSet { saveAudioSettings() } }
+    @Published var eqEnabled = false { didSet { applyEQ(); saveAudioSettings() } }
+    @Published var eqGains: [Float] = Array(repeating: 0, count: 10) { didSet { applyEQ(); saveAudioSettings() } }
 
     // Optimiseur de basses (filtre low-shelf, 0 = neutre).
-    @Published var bassBoostEnabled = false { didSet { applyBass() } }
-    @Published var bassBoostAmount: Float = 6 { didSet { applyBass() } }   // 0 a 12 dB
+    @Published var bassBoostEnabled = false { didSet { applyBass(); saveAudioSettings() } }
+    @Published var bassBoostAmount: Float = 6 { didSet { applyBass(); saveAudioSettings() } }   // 0 a 12 dB
 
     // Ambiance / reverberation (effet « salle » ou « concert »).
-    @Published var reverbOption: ReverbOption = .off { didSet { applyReverb() } }
-    @Published var reverbAmount: Float = 35 { didSet { applyReverb() } }   // 0 a 100 %
+    @Published var reverbOption: ReverbOption = .off { didSet { applyReverb(); saveAudioSettings() } }
+    @Published var reverbAmount: Float = 35 { didSet { applyReverb(); saveAudioSettings() } }   // 0 a 100 %
 
     // Profil d'ecoute actif.
-    @Published var listeningMode: ListeningMode = .normal { didSet { applyMode() } }
+    @Published var listeningMode: ListeningMode = .normal { didSet { applyMode(); saveAudioSettings() } }
 
     // Boost de volume : amplification appliquee APRES le volume systeme.
-    // 0 = 100 % (volume systeme normal), 0.5 = +50 % (soit 150 %).
-    @Published var volumeBoost: Float = 0 { didSet { applyVolumeBoost() } }
+    // 0 = 100 %, 0.5 = +50 %. Le limiteur en bout de chaine empeche la saturation.
+    @Published var volumeBoost: Float = 0 { didSet { applyVolumeBoost(); saveAudioSettings() } }
+
+    // Vitesse de lecture (0.75x a 2x) — pratique pour les podcasts / voix.
+    @Published var playbackRate: Float = 1.0 { didSet { applyRate(); saveAudioSettings() } }
 
     enum RepeatMode: String { case off, all, one }
 
@@ -86,30 +106,16 @@ final class PlayerEngine: ObservableObject {
             case .normal:
                 return ([0,0,0,0,0,0,0,0,0,0], false, 0, .off, 0)
             case .headphones:
-                // Courbe chaleureuse : graves profonds, aigus aeres.
                 return ([4,3,2,1,0,0,1,2,3,3], true, 5, .off, 0)
             case .speaker:
-                // Petit HP d'iPhone : on coupe le sub inutile, on pousse clarte et presence.
                 return ([-6,-4,-1,0,1,2,3,3,2,1], true, 0, .off, 0)
             case .plane:
-                // Avion + casque antibruit : le grondement residuel des reacteurs
-                // (bruit grave que meme l'ANC ne supprime pas totalement) masque
-                // les basses et le bas-medium. On compense : graves renforces,
-                // creux vers 250 Hz (zone du grondement), presence vocale relevee
-                // pour garder les voix intelligibles sans monter le volume.
                 return ([5,4,2,-1,0,1,2,3,2,1], true, 5, .off, 0)
             case .car:
-                // Enceintes de voiture : le bruit de roulement mange voix et
-                // details. Basses fermes (sans exces, les voitures en ont deja),
-                // mediums/presence en avant pour la clarte a vitesse de croisiere.
                 return ([2,3,1,0,1,2,3,3,2,1], true, 3, .off, 0)
             case .concert:
-                // Sensation live SUBTILE : leger renfort des graves et de l'air,
-                // petite salle a faible dose. (L'ancien reglage — grande salle a
-                // 45 % — noyait tout dans l'echo.)
                 return ([3,2,1,0,0,0,1,2,2,2], true, 4, .hall, 18)
             case .voice:
-                // Parole nette : medianes en avant, extremes attenues.
                 return ([-4,-3,-1,1,3,3,2,1,-1,-2], true, 0, .room, 12)
             }
         }
@@ -119,17 +125,13 @@ final class PlayerEngine: ObservableObject {
     weak var library: LibraryStore?
 
     // MARK: - Remontee des statistiques d'ecoute (branchee dans RootView)
-    // Ecoute complete (fin naturelle ou > 80 % du morceau).
     var onTrackCompleted: ((Track) -> Void)?
-    // Morceau passe volontairement avant 80 %.
     var onTrackSkipped: ((Track) -> Void)?
-    // Paquet de secondes reellement ecoutees (envoye aux changements de piste/pause).
     var onListenFlush: ((Track, Double) -> Void)?
 
-    // Secondes ecoutees depuis le dernier envoi (accumulees par le tic d'horloge).
     private var listenAccumulator: Double = 0
 
-    private func flushListenTime() {
+    func flushListenTime() {
         guard let track = currentTrack, listenAccumulator > 0.5 else {
             listenAccumulator = 0
             return
@@ -149,19 +151,25 @@ final class PlayerEngine: ObservableObject {
     private let engine = AVAudioEngine()
     private let players = [AVAudioPlayerNode(), AVAudioPlayerNode()]
     private let eqs = [AVAudioUnitEQ(numberOfBands: 10), AVAudioUnitEQ(numberOfBands: 10)]
-    // Un mixeur dedie par lecteur : il "absorbe" le format du fichier (qui peut
-    // varier d'un morceau a l'autre) et ressort TOUJOURS au format fixe `mixFormat`.
-    // Ainsi, charger un nouveau morceau ne reconfigure jamais le mixeur partage ni
-    // la sortie -> plus de crash AVAudioEngine sur iOS 16+.
     private let playerMixers = [AVAudioMixerNode(), AVAudioMixerNode()]
-    // Format de travail commun a tout l'etage partage (la sortie convertira si besoin).
     private let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
-    private let subMixer = AVAudioMixerNode()                 // somme les deux lecteurs
-    // Optimiseur de basses a DEUX bandes : un plateau bas (assise) + une bosse
-    // vers 60 Hz (punch). L'ancienne version (un seul plateau a 110 Hz) etait
-    // peu audible a faible reglage et saturait a fort reglage.
+    private let subMixer = AVAudioMixerNode()
+    // Vitesse de lecture (sans changer la hauteur du son).
+    private let timePitch = AVAudioUnitTimePitch()
     private let bassBoost = AVAudioUnitEQ(numberOfBands: 2)
-    private let reverb = AVAudioUnitReverb()                  // ambiance / concert
+    private let reverb = AVAudioUnitReverb()
+    // Limiteur de crete : garde-fou en bout de chaine. Il empeche la
+    // saturation quand le boost de volume ou les basses poussent le signal
+    // au-dela de 0 dB (c'etait la cause du son « sale » a fort reglage).
+    private let limiter: AVAudioUnitEffect = {
+        let desc = AudioComponentDescription(componentType: kAudioUnitType_Effect,
+                                             componentSubType: kAudioUnitSubType_PeakLimiter,
+                                             componentManufacturer: kAudioUnitManufacturer_Apple,
+                                             componentFlags: 0,
+                                             componentFlagsMask: 0)
+        return AVAudioUnitEffect(audioComponentDescription: desc)
+    }()
+
     private var files: [AVAudioFile?] = [nil, nil]
     private var startFrames: [AVAudioFramePosition] = [0, 0]
     private var generations: [Int] = [0, 0]
@@ -169,9 +177,19 @@ final class PlayerEngine: ObservableObject {
     private var isCrossfading = false
     private var consecutiveLoadFailures = 0
 
+    // File d'origine (ordre normal), memorisee quand le shuffle est actif.
+    private var orderedQueue: [Track] = []
+
+    // Gapless : piste suivante pre-chargee sur le lecteur inactif.
+    private var preloadedPlayer: Int?
+    private var preloadedIndex: Int?
+    private var preloadedTrackID: UUID?
+
     private var ticker: Timer?
     private var fadeTimer: Timer?
-    private var lastTickDate: Date?   // pour un suivi du temps fiable (horloge murale)
+    private var lastTickDate: Date?
+    private var lastPersistDate = Date.distantPast
+    private var restoringSettings = false
 
     init() {
         configureSession()
@@ -179,15 +197,17 @@ final class PlayerEngine: ObservableObject {
         setupRemoteCommands()
         observeInterruptions()
         startTicker()
+        restoreAudioSettings()
     }
 
     // MARK: - Mise en place du graphe audio
 
     private func setupEngine() {
-        // Etage commun : sous-mixeur -> optimiseur de basses -> reverb -> sortie.
         engine.attach(subMixer)
+        engine.attach(timePitch)
         engine.attach(bassBoost)
         engine.attach(reverb)
+        engine.attach(limiter)
 
         // Assise : plateau bas (tout ce qui est sous ~100 Hz est renforce).
         let shelf = bassBoost.bands[0]
@@ -204,24 +224,24 @@ final class PlayerEngine: ObservableObject {
         punch.bypass = false
 
         reverb.loadFactoryPreset(.mediumHall)
-        reverb.wetDryMix = 0   // sec par defaut (aucun effet)
+        reverb.wetDryMix = 0
+        timePitch.rate = 1.0
 
         for i in 0..<2 {
             engine.attach(players[i])
             engine.attach(eqs[i])
             engine.attach(playerMixers[i])
             configureEQ(eqs[i])
-            // Chaque lecteur : player -> egaliseur -> mixeur dedie -> sous-mixeur commun.
-            // player->eq->mixeurDedie seront reconnectes au format du fichier dans load().
             engine.connect(players[i], to: eqs[i], format: mixFormat)
             engine.connect(eqs[i], to: playerMixers[i], format: mixFormat)
-            // mixeurDedie -> sous-mixeur : connexion FIXE au format commun, jamais touchee.
             engine.connect(playerMixers[i], to: subMixer, format: mixFormat)
         }
 
-        engine.connect(subMixer, to: bassBoost, format: mixFormat)
+        engine.connect(subMixer, to: timePitch, format: mixFormat)
+        engine.connect(timePitch, to: bassBoost, format: mixFormat)
         engine.connect(bassBoost, to: reverb, format: mixFormat)
-        engine.connect(reverb, to: engine.mainMixerNode, format: mixFormat)
+        engine.connect(reverb, to: limiter, format: mixFormat)
+        engine.connect(limiter, to: engine.mainMixerNode, format: mixFormat)
 
         engine.prepare()
         try? engine.start()
@@ -248,19 +268,11 @@ final class PlayerEngine: ObservableObject {
 
     private func applyBass() {
         let amount = bassBoostEnabled ? bassBoostAmount : 0
-        bassBoost.bands[0].gain = amount           // assise (plateau bas)
-        bassBoost.bands[1].gain = amount * 0.6     // punch (bosse ~60 Hz)
-        // Marge de securite : on abaisse legerement le niveau global du filtre
-        // pour eviter que les graves renforces ne fassent saturer la sortie
-        // (c'etait la cause du son "sale" a fort boost).
+        bassBoost.bands[0].gain = amount
+        bassBoost.bands[1].gain = amount * 0.6
         bassBoost.globalGain = -amount * 0.3
     }
 
-    // Amplifie la sortie au-dela de 100 % (1.0 = normal, 1.5 = +50 %).
-    // NOTE : mainMixerNode.outputVolume est PLAFONNE a 1.0 par le systeme,
-    // donc l'ancienne methode (1.0 + boost) ne faisait strictement rien.
-    // On passe par le gain global des egaliseurs (en dB), qui lui peut
-    // reellement amplifier le signal (+3,5 dB ~= +50 %).
     private func applyVolumeBoost() {
         let boost = max(0, min(0.5, volumeBoost))
         let gainDB = Float(20.0 * log10(Double(1.0 + boost)))
@@ -276,6 +288,11 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    private func applyRate() {
+        timePitch.rate = max(0.5, min(2.0, playbackRate))
+        updateNowPlayingElapsed()
+    }
+
     // Applique un profil d'ecoute complet (egaliseur + basses + ambiance).
     private func applyMode() {
         let p = listeningMode.profile
@@ -287,6 +304,98 @@ final class PlayerEngine: ObservableObject {
         reverbOption = p.reverb
     }
 
+    // MARK: - Son personnalise (memorise avant l'application d'un profil)
+
+    private struct SoundSnapshot: Codable {
+        var eq: [Float]
+        var eqOn: Bool
+        var bass: Float
+        var bassOn: Bool
+        var reverb: String
+        var reverbAmount: Float
+    }
+
+    // A appeler depuis l'interface a la place de `listeningMode = ...` :
+    // sauvegarde d'abord les reglages manuels pour pouvoir y revenir.
+    func selectListeningMode(_ mode: ListeningMode) {
+        if listeningMode == .normal && mode != .normal {
+            let snap = SoundSnapshot(eq: eqGains, eqOn: eqEnabled,
+                                     bass: bassBoostAmount, bassOn: bassBoostEnabled,
+                                     reverb: reverbOption.rawValue, reverbAmount: reverbAmount)
+            if let data = try? JSONEncoder().encode(snap) {
+                UserDefaults.standard.set(data, forKey: "audio.customSnapshot")
+            }
+        }
+        listeningMode = mode
+    }
+
+    var hasCustomSound: Bool {
+        UserDefaults.standard.data(forKey: "audio.customSnapshot") != nil
+    }
+
+    // Restaure les reglages manuels sauvegardes ("Personnalisé").
+    func restoreCustomSound() {
+        guard let data = UserDefaults.standard.data(forKey: "audio.customSnapshot"),
+              let snap = try? JSONDecoder().decode(SoundSnapshot.self, from: data) else { return }
+        listeningMode = .normal            // remet tout a plat...
+        eqGains = snap.eq                  // ...puis reapplique les reglages perso.
+        eqEnabled = snap.eqOn
+        bassBoostAmount = snap.bass
+        bassBoostEnabled = snap.bassOn
+        reverbAmount = snap.reverbAmount
+        reverbOption = ReverbOption(rawValue: snap.reverb) ?? .off
+    }
+
+    // MARK: - Persistance des reglages audio
+
+    private func saveAudioSettings() {
+        guard !restoringSettings else { return }
+        let d = UserDefaults.standard
+        d.set(crossfadeDuration, forKey: "audio.crossfade")
+        d.set(eqEnabled, forKey: "audio.eqOn")
+        d.set(eqGains.map { NSNumber(value: $0) }, forKey: "audio.eqGains")
+        d.set(bassBoostEnabled, forKey: "audio.bassOn")
+        d.set(Double(bassBoostAmount), forKey: "audio.bassAmount")
+        d.set(reverbOption.rawValue, forKey: "audio.reverb")
+        d.set(Double(reverbAmount), forKey: "audio.reverbAmount")
+        d.set(listeningMode.rawValue, forKey: "audio.mode")
+        d.set(Double(volumeBoost), forKey: "audio.volumeBoost")
+        d.set(Double(playbackRate), forKey: "audio.rate")
+        d.set(shuffleEnabled, forKey: "audio.shuffle")
+        d.set(repeatMode.rawValue, forKey: "audio.repeat")
+    }
+
+    private func restoreAudioSettings() {
+        let d = UserDefaults.standard
+        guard d.object(forKey: "audio.crossfade") != nil else { return }  // premiere ouverture
+        restoringSettings = true
+        // Le mode d'abord (il ecrase gains/basses/reverb), puis les valeurs
+        // individuelles par-dessus (identiques au profil pour un utilisateur
+        // "mode", personnalisees pour un utilisateur "manuel").
+        if let raw = d.string(forKey: "audio.mode"), let mode = ListeningMode(rawValue: raw) {
+            listeningMode = mode
+        }
+        crossfadeDuration = d.double(forKey: "audio.crossfade")
+        if let gains = d.array(forKey: "audio.eqGains") as? [NSNumber], gains.count == 10 {
+            eqGains = gains.map { $0.floatValue }
+        }
+        eqEnabled = d.bool(forKey: "audio.eqOn")
+        bassBoostAmount = Float(d.double(forKey: "audio.bassAmount"))
+        bassBoostEnabled = d.bool(forKey: "audio.bassOn")
+        reverbAmount = Float(d.double(forKey: "audio.reverbAmount"))
+        if let raw = d.string(forKey: "audio.reverb"), let opt = ReverbOption(rawValue: raw) {
+            reverbOption = opt
+        }
+        volumeBoost = Float(d.double(forKey: "audio.volumeBoost"))
+        let rate = d.double(forKey: "audio.rate")
+        playbackRate = rate > 0 ? Float(rate) : 1.0
+        shuffleEnabled = d.bool(forKey: "audio.shuffle")
+        if let raw = d.string(forKey: "audio.repeat"), let mode = RepeatMode(rawValue: raw) {
+            repeatMode = mode
+        }
+        restoringSettings = false
+    }
+
     private func configureSession() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default)
@@ -295,13 +404,24 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Lecture d'une file
 
-    // Lance la lecture d'une liste de morceaux a partir d'un index donne.
     func play(tracks: [Track], startAt index: Int) {
         guard !tracks.isEmpty, index >= 0, index < tracks.count else { return }
-        queue = tracks
-        queueIndex = index
         isCrossfading = false
-        load(track: tracks[index], intoPlayer: activeIndex, startFrame: 0, autoPlay: true)
+        invalidatePreload()
+        if shuffleEnabled {
+            // File melangee UNE fois, le morceau demande en tete.
+            orderedQueue = tracks
+            var rest = tracks
+            let start = rest.remove(at: index)
+            rest.shuffle()
+            queue = [start] + rest
+            queueIndex = 0
+        } else {
+            orderedQueue = []
+            queue = tracks
+            queueIndex = index
+        }
+        load(track: queue[queueIndex], intoPlayer: activeIndex, startFrame: 0, autoPlay: true)
     }
 
     func playSingle(_ track: Track, in context: [Track]) {
@@ -312,13 +432,74 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    // Activation / desactivation du shuffle sur la file en cours.
+    private func shuffleChanged() {
+        guard !queue.isEmpty else { return }
+        invalidatePreload()
+        if shuffleEnabled {
+            orderedQueue = queue
+            var rest = queue
+            var head: [Track] = []
+            if queueIndex >= 0, queueIndex < rest.count {
+                head = [rest.remove(at: queueIndex)]
+            }
+            rest.shuffle()
+            queue = head + rest
+            queueIndex = 0
+        } else if !orderedQueue.isEmpty {
+            let current = currentTrack
+            queue = orderedQueue
+            orderedQueue = []
+            if let current, let idx = queue.firstIndex(of: current) {
+                queueIndex = idx
+            } else {
+                queueIndex = min(queueIndex, max(0, queue.count - 1))
+            }
+        }
+    }
+
+    // MARK: - Gestion de la file (Lire ensuite / Ajouter a la file)
+
+    func playNext(_ track: Track) {
+        guard currentTrack != nil, !queue.isEmpty else {
+            play(tracks: [track], startAt: 0)
+            return
+        }
+        invalidatePreload()
+        queue.insert(track, at: min(queueIndex + 1, queue.count))
+    }
+
+    func addToQueue(_ track: Track) {
+        guard currentTrack != nil, !queue.isEmpty else {
+            play(tracks: [track], startAt: 0)
+            return
+        }
+        invalidatePreload()
+        queue.append(track)
+    }
+
+    // Suppression d'elements « A suivre » (indices ABSOLUS dans la file).
+    func removeFromQueue(atQueueIndices indices: [Int]) {
+        invalidatePreload()
+        for i in indices.sorted(by: >) where i > queueIndex && i < queue.count {
+            queue.remove(at: i)
+        }
+    }
+
+    // Reordonnancement de la partie « A suivre » (offsets RELATIFS a cette partie).
+    func moveUpcoming(from source: IndexSet, to destination: Int) {
+        guard queueIndex + 1 <= queue.count else { return }
+        invalidatePreload()
+        var upcoming = Array(queue[(queueIndex + 1)...])
+        upcoming.move(fromOffsets: source, toOffset: destination)
+        queue.replaceSubrange((queueIndex + 1)..., with: upcoming)
+    }
+
     // Charge un morceau dans l'un des deux lecteurs et (optionnellement) demarre.
     private func load(track: Track, intoPlayer i: Int, startFrame: AVAudioFramePosition, autoPlay: Bool) {
         guard let lib = library else { return }
         let url = lib.url(for: track)
         guard let file = try? AVAudioFile(forReading: url) else {
-            // Fichier illisible (format non supporte, ex. .opus) : on saute au suivant,
-            // mais on s'arrete si toute la file est illisible pour ne pas boucler.
             consecutiveLoadFailures += 1
             if consecutiveLoadFailures >= max(1, queue.count) {
                 consecutiveLoadFailures = 0
@@ -329,12 +510,6 @@ final class PlayerEngine: ObservableObject {
             return
         }
         consecutiveLoadFailures = 0
-
-        // IMPORTANT : on ne reconfigure PAS le graphe ici. Il est cable une seule fois
-        // (au format fixe `mixFormat`) dans setupEngine(). `scheduleSegment` convertit
-        // automatiquement le fichier (frequence d'echantillonnage ET canaux) vers ce
-        // format. Reconnecter/disconnecter pendant que le moteur tourne fait planter
-        // AVAudioEngine sur iOS 16+ (UpdateGraphAfterReconfig) -> a proscrire.
 
         players[i].stop()
         players[i].volume = 1.0
@@ -357,10 +532,7 @@ final class PlayerEngine: ObservableObject {
         if autoPlay {
             activeIndex = i
             currentTrack = track
-            // Duree calculee depuis le fichier lui-meme (fiable), avec repli sur la
-            // metadonnee si besoin. track.duration vaut souvent 0 -> barre cassee.
             duration = computedDuration(for: i, fallback: track.duration)
-            // Position de depart + reamorcage de l'horloge (barre fiable des le debut).
             currentTime = Double(startFrame) / max(1, file.processingFormat.sampleRate)
             lastTickDate = nil
             players[i].play()
@@ -370,7 +542,6 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    // Duree reelle du fichier charge dans le lecteur i (en secondes).
     private func computedDuration(for i: Int, fallback: Double) -> Double {
         guard let file = files[i] else { return fallback }
         let sr = file.processingFormat.sampleRate
@@ -378,11 +549,71 @@ final class PlayerEngine: ObservableObject {
         return secs > 0.1 ? secs : fallback
     }
 
+    // MARK: - Gapless (enchainement sans blanc)
+
+    // Pre-charge la piste suivante sur le lecteur inactif : ouverture du
+    // fichier et planification faites A L'AVANCE. A la fin du morceau, il ne
+    // reste qu'a appuyer sur « play » -> l'enchainement est quasi instantane
+    // (sans crossfade, l'ancien code rouvrait le fichier a ce moment-la,
+    // d'ou un blanc audible entre les pistes).
+    private func preload(track: Track, atQueueIndex idx: Int) {
+        guard let lib = library,
+              let file = try? AVAudioFile(forReading: lib.url(for: track)) else { return }
+        let j = 1 - activeIndex
+        players[j].stop()
+        players[j].volume = 1.0
+        files[j] = file
+        startFrames[j] = 0
+        generations[j] += 1
+        let gen = generations[j]
+        players[j].scheduleSegment(file,
+                                   startingFrame: 0,
+                                   frameCount: AVAudioFrameCount(file.length),
+                                   at: nil,
+                                   completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in self?.handlePlaybackFinished(player: j, generation: gen) }
+        }
+        preloadedPlayer = j
+        preloadedIndex = idx
+        preloadedTrackID = track.id
+    }
+
+    private func invalidatePreload() {
+        if let p = preloadedPlayer {
+            generations[p] += 1
+            players[p].stop()
+        }
+        preloadedPlayer = nil
+        preloadedIndex = nil
+        preloadedTrackID = nil
+    }
+
     // Fin naturelle d'un morceau (signalee par le callback de planification).
     private func handlePlaybackFinished(player i: Int, generation gen: Int) {
-        // On ignore les callbacks perimes (seek, crossfade, changement de piste).
         guard gen == generations[i] else { return }
         guard i == activeIndex, !isCrossfading else { return }
+
+        // Bascule gapless : la piste suivante est deja prete sur l'autre lecteur.
+        if let pp = preloadedPlayer, let pi = preloadedIndex, let pid = preloadedTrackID,
+           pp != i, !stopAfterCurrentTrack, repeatMode != .one,
+           pi < queue.count, queue[pi].id == pid {
+            if let finished = currentTrack { onTrackCompleted?(finished) }
+            flushListenTime()
+            players[pp].play()
+            activeIndex = pp
+            queueIndex = pi
+            currentTrack = queue[pi]
+            duration = computedDuration(for: pp, fallback: queue[pi].duration)
+            currentTime = 0
+            lastTickDate = nil
+            preloadedPlayer = nil
+            preloadedIndex = nil
+            preloadedTrackID = nil
+            isPlaying = true
+            updateNowPlaying()
+            persistSession()
+            return
+        }
         advanceAtEnd()
     }
 
@@ -409,8 +640,7 @@ final class PlayerEngine: ObservableObject {
 
     func next() {
         cancelCrossfade()
-        // Signal de gout : passer un morceau avant 80 % = "j'aime moins",
-        // le passer apres 80 % compte comme une ecoute complete.
+        invalidatePreload()
         if let track = currentTrack, duration > 0 {
             if currentTime / duration < 0.8 {
                 onTrackSkipped?(track)
@@ -425,9 +655,6 @@ final class PlayerEngine: ObservableObject {
             return
         }
         var newIndex = queueIndex + 1
-        if shuffleEnabled, queue.count > 1 {
-            newIndex = randomOtherIndex()
-        }
         if newIndex >= queue.count {
             if repeatMode == .all { newIndex = 0 } else { stopPlayback(); return }
         }
@@ -438,18 +665,24 @@ final class PlayerEngine: ObservableObject {
     func previous() {
         cancelCrossfade()
         flushListenTime()
-        // Comportement classique : si on est au-dela de 3 s, on revient au debut.
         if currentTime > 3 {
             restartCurrent()
             return
         }
         guard !queue.isEmpty else { return }
+        invalidatePreload()
         var newIndex = queueIndex - 1
         if newIndex < 0 {
             newIndex = repeatMode == .all ? queue.count - 1 : 0
         }
         queueIndex = newIndex
         load(track: queue[newIndex], intoPlayer: activeIndex, startFrame: 0, autoPlay: true)
+    }
+
+    // Saut avant/arriere (utilise en mode Voix / Podcast).
+    func skip(by seconds: Double) {
+        guard duration > 0 else { return }
+        seek(to: max(0, min(duration - 0.5, currentTime + seconds)))
     }
 
     private func advanceAtEnd() {
@@ -463,7 +696,6 @@ final class PlayerEngine: ObservableObject {
         }
         if repeatMode == .one { restartCurrent(); return }
         var newIndex = queueIndex + 1
-        if shuffleEnabled, queue.count > 1 { newIndex = randomOtherIndex() }
         if newIndex >= queue.count {
             if repeatMode == .all { newIndex = 0 } else { stopPlayback(); return }
         }
@@ -476,23 +708,21 @@ final class PlayerEngine: ObservableObject {
         load(track: t, intoPlayer: activeIndex, startFrame: 0, autoPlay: true)
     }
 
-    private func randomOtherIndex() -> Int {
-        guard queue.count > 1 else { return queueIndex }
-        var idx = queueIndex
-        while idx == queueIndex { idx = Int.random(in: 0..<queue.count) }
-        return idx
-    }
-
     private func stopPlayback() {
+        invalidatePreload()
         players.forEach { $0.stop() }
         isPlaying = false
         currentTime = 0
         updateNowPlaying()
     }
 
+    // Volume de sortie global (utilise par le fondu du minuteur de sommeil).
+    func setOutputVolume(_ v: Float) {
+        engine.mainMixerNode.outputVolume = max(0, min(1, v))
+    }
+
     // MARK: - Reprise de session (redemarrage de l'app)
 
-    // Sauvegarde l'etat courant (file, position) pour la reprise au lancement.
     func persistSession() {
         let d = UserDefaults.standard
         guard let track = currentTrack, !queue.isEmpty else {
@@ -505,7 +735,6 @@ final class PlayerEngine: ObservableObject {
         d.set(track.id.uuidString, forKey: "session.trackID")
     }
 
-    // Restaure la derniere session EN PAUSE (jamais de lecture surprise).
     func restoreSavedSessionIfNeeded() {
         guard currentTrack == nil, let lib = library else { return }
         let d = UserDefaults.standard
@@ -540,6 +769,8 @@ final class PlayerEngine: ObservableObject {
         let frame = AVAudioFramePosition(max(0, time) * sr)
         guard let track = currentTrack else { return }
         cancelCrossfade()
+        // NOTE : on ne touche PAS au pre-chargement gapless — la piste suivante
+        // reste la meme, sa planification reste valable.
         let wasPlaying = isPlaying
         load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true)
         if !wasPlaying { pause() }
@@ -549,20 +780,21 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Crossfade
 
     private func startCrossfade(to track: Track) {
+        invalidatePreload()
         let newPlayer = 1 - activeIndex
         isCrossfading = true
-        // Charge la piste suivante en sourdine sur l'autre lecteur, sans la rendre active.
         load(track: track, intoPlayer: newPlayer, startFrame: 0, autoPlay: false)
         players[newPlayer].volume = 0
         players[newPlayer].play()
 
         let oldPlayer = activeIndex
-        // L'ancien lecteur reste actif pour le suivi du temps jusqu'a bascule.
         let steps = 40
         let interval = crossfadeDuration / Double(steps)
         var step = 0
         fadeTimer?.invalidate()
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
+        // Mode .common : en mode .default le timer serait GELE pendant un
+        // scroll ou un doigt pose sur l'ecran -> fondu fige en plein milieu.
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] timer in
             Task { @MainActor in
                 guard let self else { timer.invalidate(); return }
                 step += 1
@@ -575,6 +807,8 @@ final class PlayerEngine: ObservableObject {
                 }
             }
         }
+        RunLoop.main.add(t, forMode: .common)
+        fadeTimer = t
     }
 
     private func finishCrossfade(newPlayer: Int, track: Track) {
@@ -586,9 +820,9 @@ final class PlayerEngine: ObservableObject {
         duration = computedDuration(for: newPlayer, fallback: track.duration)
         isPlaying = true
         isCrossfading = false
-        // Avance l'index logique de la file.
         if let idx = queue.firstIndex(of: track) { queueIndex = idx }
         updateNowPlaying()
+        persistSession()
     }
 
     private func cancelCrossfade() {
@@ -601,23 +835,19 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    // Piste qui suivra dans la file (pour preparer le crossfade).
-    private func upcomingTrack() -> Track? {
-        guard !queue.isEmpty else { return nil }
-        if repeatMode == .one { return nil }
-        if shuffleEnabled { return nil } // pas de crossfade fiable en aleatoire
+    // Piste qui suivra dans la file (index + morceau). Fonctionne desormais
+    // aussi en shuffle, puisque la file melangee est deterministe.
+    private func upcoming() -> (Int, Track)? {
+        guard !queue.isEmpty, repeatMode != .one else { return nil }
         let nextIdx = queueIndex + 1
-        if nextIdx < queue.count { return queue[nextIdx] }
-        if repeatMode == .all { return queue.first }
+        if nextIdx < queue.count { return (nextIdx, queue[nextIdx]) }
+        if repeatMode == .all, let first = queue.first { return (0, first) }
         return nil
     }
 
-    // MARK: - Tic d'horloge (mise a jour du temps + declenchement crossfade)
+    // MARK: - Tic d'horloge (temps + crossfade + gapless + sauvegarde)
 
     private func startTicker() {
-        // IMPORTANT : mode .common. En mode .default (celui de scheduledTimer),
-        // le timer est GELE des que l'utilisateur touche l'ecran (scroll, drag,
-        // doigt pose) -> la barre de progression semble ne jamais avancer.
         let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -627,25 +857,17 @@ final class PlayerEngine: ObservableObject {
 
     private func tick() {
         guard isPlaying else { lastTickDate = nil; return }
-        // 1) Source fiable : l'horloge du lecteur audio lui-meme (suit exactement
-        //    ce qui sort des haut-parleurs, aucune derive possible).
         if let t = playbackPosition() {
             if t > duration, duration > 0 {
-                // La duree annoncee (en-tete VBR souvent faux sur les fichiers
-                // YouTube) etait sous-estimee : on l'etend au lieu de bloquer
-                // la barre a 100 % alors que la musique continue.
                 duration = t
             }
-            // Temps reellement ecoute : delta borne pour ignorer seeks et reprises.
             let delta = t - currentTime
             if delta > 0, delta < 2 { listenAccumulator += delta }
             currentTime = t
             lastTickDate = Date()
-            checkCrossfadeAndNowPlaying()
+            afterTick()
             return
         }
-        // 2) Repli : horloge murale (utile la fraction de seconde ou le lecteur
-        //    n'a pas encore rendu son premier buffer).
         let now = Date()
         if let last = lastTickDate {
             var t = currentTime + now.timeIntervalSince(last)
@@ -653,10 +875,9 @@ final class PlayerEngine: ObservableObject {
             currentTime = t
         }
         lastTickDate = now
-        checkCrossfadeAndNowPlaying()
+        afterTick()
     }
 
-    // Position de lecture reelle (secondes), lue sur l'horloge du player actif.
     private func playbackPosition() -> Double? {
         let p = players[activeIndex]
         guard let nodeTime = p.lastRenderTime,
@@ -664,20 +885,31 @@ final class PlayerEngine: ObservableObject {
               playerTime.isSampleTimeValid,
               playerTime.sampleRate > 0 else { return nil }
         let played = max(0, Double(playerTime.sampleTime) / playerTime.sampleRate)
-        // Decalage de depart (apres un seek, la lecture commence a startFrame).
         let fileSR = files[activeIndex]?.processingFormat.sampleRate ?? 0
         let offset = fileSR > 0 ? Double(startFrames[activeIndex]) / fileSR : 0
         return offset + played
     }
 
-    private func checkCrossfadeAndNowPlaying() {
-
-        // Declenchement du crossfade.
-        if crossfadeDuration > 0, !isCrossfading, duration > 0 {
+    private func afterTick() {
+        if duration > 0, !isCrossfading {
             let remaining = duration - currentTime
-            if remaining <= crossfadeDuration, remaining > 0.1, let nextTrack = upcomingTrack() {
-                startCrossfade(to: nextTrack)
+            if crossfadeDuration > 0 {
+                // Declenchement du crossfade.
+                if remaining <= crossfadeDuration, remaining > 0.1, let (_, nextTrack) = upcoming() {
+                    startCrossfade(to: nextTrack)
+                }
+            } else if remaining <= 15, remaining > 0.5, preloadedPlayer == nil,
+                      !stopAfterCurrentTrack, let (idx, nextTrack) = upcoming() {
+                // Pre-chargement gapless de la piste suivante.
+                preload(track: nextTrack, atQueueIndex: idx)
             }
+        }
+        // Sauvegarde periodique de la position : si l'app est tuee en pleine
+        // lecture (ou crash), la reprise ne perd plus tout depuis la derniere
+        // pause — au pire les 10 dernieres secondes.
+        if Date().timeIntervalSince(lastPersistDate) > 10 {
+            lastPersistDate = Date()
+            persistSession()
         }
         updateNowPlayingElapsed()
     }
@@ -724,9 +956,12 @@ final class PlayerEngine: ObservableObject {
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
-            MPMediaItemPropertyPlaybackDuration: track.duration,
+            // Duree REELLE calculee depuis le fichier (self.duration), pas la
+            // metadonnee track.duration souvent fausse sur les fichiers VBR :
+            // la barre de l'ecran verrouille est desormais coherente avec l'app.
+            MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(playbackRate) : 0.0
         ]
         if let image = library?.artworkImage(for: track) {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
@@ -737,17 +972,26 @@ final class PlayerEngine: ObservableObject {
     private func updateNowPlayingElapsed() {
         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    // MARK: - Interruptions (appels, autres apps)
+    // MARK: - Interruptions (appels, autres apps) et changements de sortie
 
     private func observeInterruptions() {
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil, queue: .main) { [weak self] note in
             Task { @MainActor in self?.handleInterruption(note) }
+        }
+        // Debranchement des ecouteurs / deconnexion Bluetooth : on met en
+        // pause au lieu de continuer sur le haut-parleur (comportement
+        // standard des lecteurs de musique).
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil, queue: .main) { [weak self] note in
+            Task { @MainActor in self?.handleRouteChange(note) }
         }
     }
 
@@ -765,6 +1009,15 @@ final class PlayerEngine: ObservableObject {
             }
         @unknown default:
             break
+        }
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        guard let info = note.userInfo,
+              let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+        if reason == .oldDeviceUnavailable, isPlaying {
+            pause()
         }
     }
 }

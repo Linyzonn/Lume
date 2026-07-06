@@ -11,6 +11,9 @@ final class LibraryStore: ObservableObject {
     @Published var playlists: [Playlist] = []
     @Published var isImporting = false
     @Published var importProgress: String = ""
+    // Fichiers refuses lors du dernier import (nom + raison), pour informer
+    // l'utilisateur au lieu d'ignorer silencieusement.
+    @Published var importErrors: [String] = []
 
     // Statistiques d'ecoute, stockees SEPAREMENT de la bibliotheque
     // (fichier stats.json) pour ne jamais mettre en peril tes donnees.
@@ -50,10 +53,13 @@ final class LibraryStore: ObservableObject {
     // Extensions audio reconnues pour l'import automatique.
     static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "aif", "aiff", "aifc", "caf"]
 
-    init() {
+    // Les repertoires sont injectables : les TESTS UNITAIRES passent des
+    // dossiers temporaires et ne touchent plus jamais aux vraies donnees.
+    init(rootDirectory: URL? = nil, documentsDirectory: URL? = nil) {
         let fm = FileManager.default
-        docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        docs = documentsDirectory ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        try? fm.createDirectory(at: docs, withIntermediateDirectories: true)
+        let support = rootDirectory ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Lume", isDirectory: true)
         tracksDir = support.appendingPathComponent("Tracks", isDirectory: true)
         artworkDir = support.appendingPathComponent("Artwork", isDirectory: true)
@@ -180,6 +186,7 @@ final class LibraryStore: ObservableObject {
 
     func importFiles(_ urls: [URL]) async {
         isImporting = true
+        importErrors = []
         defer { isImporting = false; importProgress = ""; save() }
 
         for (index, source) in urls.enumerated() {
@@ -195,7 +202,17 @@ final class LibraryStore: ObservableObject {
             do {
                 try FileManager.default.copyItem(at: source, to: dest)
             } catch {
-                continue // fichier illisible : on passe au suivant
+                importErrors.append("\(source.lastPathComponent) : fichier illisible ou inaccessible")
+                continue
+            }
+
+            // Validation IMMEDIATE : si le moteur audio ne sait pas lire ce
+            // fichier (ex. .opus), on le refuse maintenant avec un message
+            // clair, plutot que de decouvrir le probleme a la lecture.
+            if (try? AVAudioFile(forReading: dest)) == nil {
+                try? FileManager.default.removeItem(at: dest)
+                importErrors.append("\(source.lastPathComponent) : format audio non pris en charge")
+                continue
             }
 
             let track = await extractMetadata(from: dest,
@@ -229,16 +246,25 @@ final class LibraryStore: ObservableObject {
         guard !candidates.isEmpty else { return }
 
         isImporting = true
+        importErrors = []
         defer { isImporting = false; importProgress = ""; save() }
 
         for (index, source) in candidates.enumerated() {
-            importProgress = "Import iTunes \(index + 1)/\(candidates.count)…"
+            importProgress = "Import \(index + 1)/\(candidates.count)…"
             let ext = source.pathExtension.isEmpty ? "m4a" : source.pathExtension
             let storedName = "\(UUID().uuidString).\(ext)"
             let dest = tracksDir.appendingPathComponent(storedName)
             do {
                 try fm.moveItem(at: source, to: dest)
             } catch {
+                continue
+            }
+
+            // Meme validation que pour l'import manuel : fichier illisible
+            // par le moteur audio -> refuse tout de suite, avec un message.
+            if (try? AVAudioFile(forReading: dest)) == nil {
+                try? fm.removeItem(at: dest)
+                importErrors.append("\(source.lastPathComponent) : format audio non pris en charge")
                 continue
             }
             let track = await extractMetadata(from: dest,
@@ -255,6 +281,27 @@ final class LibraryStore: ObservableObject {
             matchWishlist(track)
         }
         tracks.sort { $0.dateAdded > $1.dateAdded }
+    }
+
+    // MARK: - Boite de depot (utilisee par l'import Wi-Fi)
+
+    // Ecrit un fichier recu (par le serveur Wi-Fi) dans la boite de depot ;
+    // il sera ensuite importe par scanInbox comme un depot iTunes classique.
+    func saveToInbox(fileName: String, data: Data) {
+        let safe = fileName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+        var dest = docs.appendingPathComponent(safe)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            dest = docs.appendingPathComponent("\(UUID().uuidString.prefix(8))-\(safe)")
+        }
+        try? data.write(to: dest, options: .atomic)
+    }
+
+    // Reste-t-il des fichiers audio a importer dans la boite de depot ?
+    var inboxHasAudio: Bool {
+        let items = (try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)) ?? []
+        return items.contains { Self.audioExtensions.contains($0.pathExtension.lowercased()) }
     }
 
     // Deux morceaux sont consideres identiques si titre + artiste correspondent
@@ -533,24 +580,47 @@ final class LibraryStore: ObservableObject {
         dailyListening = decoded.daily
     }
 
-    private func saveStats() {
+    private func saveStatsNow() {
         let data = StatsData(perTrack: stats, daily: dailyListening)
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: statsFile, options: .atomic)
         }
     }
 
+    // Sauvegarde DIFFEREE des stats : les evenements arrivent en rafale
+    // (temps d'ecoute toutes les quelques secondes, skips...) et reecrire
+    // tout le fichier a chaque fois est inutile. On regroupe : au plus une
+    // ecriture toutes les 5 s. flushStatsNow() force l'ecriture immediate
+    // (appele quand l'app passe en arriere-plan).
+    private var statsSaveTask: Task<Void, Never>?
+
+    private func scheduleStatsSave() {
+        guard statsSaveTask == nil else { return }
+        statsSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.statsSaveTask = nil
+            self.saveStatsNow()
+        }
+    }
+
+    func flushStatsNow() {
+        statsSaveTask?.cancel()
+        statsSaveTask = nil
+        saveStatsNow()
+    }
+
     // Une ecoute complete (fin naturelle du morceau, ou > 80 % ecoute).
     func recordPlay(_ trackID: UUID) {
         stats[trackID, default: TrackStats()].plays += 1
         stats[trackID]?.lastPlayed = Date()
-        saveStats()
+        scheduleStatsSave()
     }
 
     // Morceau passe volontairement avant la fin -> signal "j'aime moins".
     func recordSkip(_ trackID: UUID) {
         stats[trackID, default: TrackStats()].skips += 1
-        saveStats()
+        scheduleStatsSave()
     }
 
     // Temps d'ecoute accumule (envoye par paquets par le moteur).
@@ -558,7 +628,7 @@ final class LibraryStore: ObservableObject {
         guard seconds > 0.5 else { return }
         stats[trackID, default: TrackStats()].seconds += seconds
         dailyListening[Self.dayKey(), default: 0] += seconds
-        saveStats()
+        scheduleStatsSave()
     }
 
     // MARK: - Pochettes en ligne (iTunes)
@@ -685,16 +755,28 @@ final class LibraryStore: ObservableObject {
     // Reconnaissance automatique : appele apres chaque import. Si le morceau
     // correspond a une envie (titre + artiste), l'envie est retiree et le
     // morceau range dans la playlist "Découvertes".
+    // Correspondance souple mais SANS faux positifs : l'inclusion d'un titre
+    // dans l'autre n'est acceptee que si le plus court fait au moins 6
+    // caracteres (sinon "Home" matcherait "Coming Home", etc.).
+    private static func flexibleTitleMatch(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let shorter = a.count <= b.count ? a : b
+        let longer = a.count <= b.count ? b : a
+        return shorter.count >= 6 && longer.contains(shorter)
+    }
+
     private func matchWishlist(_ track: Track) {
         let trackTitle = Self.normalized(Self.cleanedTitle(track.title))
         let trackArtists = track.artistList.map { Self.normalized($0) }
         guard let match = wishlist.first(where: { wish in
             let wishTitle = Self.normalized(Self.cleanedTitle(wish.title))
             let wishArtist = Self.normalized(wish.artist)
-            let titleOK = wishTitle == trackTitle
-                || wishTitle.contains(trackTitle) || trackTitle.contains(wishTitle)
-            let artistOK = trackArtists.contains { $0 == wishArtist
-                || $0.contains(wishArtist) || wishArtist.contains($0) }
+            let titleOK = Self.flexibleTitleMatch(wishTitle, trackTitle)
+            let artistOK = trackArtists.contains { candidate in
+                candidate == wishArtist
+                || (min(candidate.count, wishArtist.count) >= 4
+                    && (candidate.contains(wishArtist) || wishArtist.contains(candidate)))
+            }
             return titleOK && artistOK
         }) else { return }
 
@@ -780,6 +862,103 @@ final class LibraryStore: ObservableObject {
 
     func tracks(in playlist: Playlist) -> [Track] {
         playlist.trackIDs.compactMap { id in tracks.first { $0.id == id } }
+    }
+
+    // MARK: - Sauvegarde / restauration
+    //
+    // Vital avec le sideload (limite des 7 jours) : si l'app doit etre
+    // reinstallee de zero, l'utilisateur restaure favoris, playlists,
+    // paroles, statistiques et liste d'envies depuis un simple fichier JSON.
+    // (Les fichiers audio eux-memes ne sont pas dans la sauvegarde : ils se
+    // reimportent via le Wi-Fi ou iTunes, et sont re-relies automatiquement
+    // par titre + artiste + duree.)
+
+    struct BackupData: Codable {
+        var tracks: [Track]
+        var playlists: [Playlist]
+        var stats: [UUID: TrackStats]
+        var daily: [String: Double]
+        var wishlist: [WishItem]
+    }
+
+    // Genere le fichier de sauvegarde dans un dossier temporaire et
+    // retourne son URL (a partager via la feuille de partage).
+    func exportBackup() -> URL? {
+        let backup = BackupData(tracks: tracks, playlists: playlists,
+                                stats: stats, daily: dailyListening,
+                                wishlist: wishlist)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(backup) else { return nil }
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Lume-sauvegarde-\(df.string(from: Date())).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    // Restaure une sauvegarde en FUSIONNANT avec l'existant (rien n'est
+    // supprime). Les morceaux sont reconnus par titre + artiste + duree
+    // (ou nom de fichier identique). Retourne le nombre de morceaux relies.
+    @discardableResult
+    func restoreBackup(from url: URL) -> Int {
+        let needsStop = url.startAccessingSecurityScopedResource()
+        defer { if needsStop { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url),
+              let backup = try? JSONDecoder().decode(BackupData.self, from: data) else { return 0 }
+
+        // Table ancienne ID -> ID locale, pour re-lier playlists et stats.
+        var idMap: [UUID: UUID] = [:]
+        for old in backup.tracks {
+            guard let local = tracks.first(where: { sameSong($0, old) || $0.fileName == old.fileName })
+            else { continue }
+            idMap[old.id] = local.id
+            if let i = tracks.firstIndex(where: { $0.id == local.id }) {
+                if old.isFavorite { tracks[i].isFavorite = true }
+                if tracks[i].lyrics == nil { tracks[i].lyrics = old.lyrics }
+            }
+        }
+
+        // Playlists : fusionnees par nom.
+        for pl in backup.playlists {
+            let mapped = pl.trackIDs.compactMap { idMap[$0] }
+            if let i = playlists.firstIndex(where: { $0.name == pl.name }) {
+                for id in mapped where !playlists[i].trackIDs.contains(id) {
+                    playlists[i].trackIDs.append(id)
+                }
+            } else if !mapped.isEmpty {
+                playlists.append(Playlist(name: pl.name, trackIDs: mapped))
+            }
+        }
+
+        // Statistiques : on garde le maximum des deux cotes.
+        for (oldID, st) in backup.stats {
+            guard let newID = idMap[oldID] else { continue }
+            var merged = stats[newID] ?? TrackStats()
+            merged.plays = max(merged.plays, st.plays)
+            merged.skips = max(merged.skips, st.skips)
+            merged.seconds = max(merged.seconds, st.seconds)
+            merged.lastPlayed = [merged.lastPlayed, st.lastPlayed].compactMap { $0 }.max()
+            stats[newID] = merged
+        }
+        for (day, secs) in backup.daily {
+            dailyListening[day] = max(dailyListening[day] ?? 0, secs)
+        }
+
+        // Liste d'envies.
+        for wish in backup.wishlist where !wishlist.contains(where: { $0.id == wish.id }) {
+            wishlist.append(wish)
+        }
+
+        save()
+        saveWishlist()
+        flushStatsNow()
+        return idMap.count
     }
 
     // Regroupements pratiques pour l'affichage (mis en cache, voir plus haut).

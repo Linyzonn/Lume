@@ -25,9 +25,39 @@ struct StatsView: View {
             LabeledContent("Temps d'écoute total", value: formatDuration(totalSeconds))
             LabeledContent("Écoutes complètes", value: "\(totalPlays)")
             LabeledContent("Titres écoutés", value: "\(listenedCount) / \(library.tracks.count)")
+            if currentStreak > 1 {
+                LabeledContent {
+                    Text("\(currentStreak) jours 🔥")
+                } label: {
+                    Text("Série en cours")
+                }
+            }
         } header: {
             Text("En résumé")
         }
+    }
+
+    // Nombre de jours CONSECUTIFS avec au moins une minute d'ecoute,
+    // en remontant depuis aujourd'hui (ou hier, pour ne pas casser la
+    // serie avant d'avoir ecoute quelque chose dans la journee).
+    private var currentStreak: Int {
+        let cal = Calendar.current
+        func listened(_ date: Date) -> Bool {
+            (library.dailyListening[LibraryStore.dayKey(date)] ?? 0) >= 60
+        }
+        var day = Date()
+        if !listened(day) {
+            guard let yesterday = cal.date(byAdding: .day, value: -1, to: day),
+                  listened(yesterday) else { return 0 }
+            day = yesterday
+        }
+        var streak = 0
+        while listened(day) {
+            streak += 1
+            guard let previous = cal.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+        return streak
     }
 
     // MARK: - Activite 14 jours

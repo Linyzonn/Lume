@@ -17,8 +17,18 @@ struct QueueView: View {
                     if upcoming.isEmpty {
                         Text("Fin de la file.").foregroundStyle(.secondary)
                     }
-                    ForEach(upcoming) { track in
-                        TrackRow(track: track, context: engine.queue, showArtwork: true)
+                    // id par POSITION (offset) : la meme piste peut apparaitre
+                    // deux fois dans la file (« Lire ensuite »), or ForEach
+                    // exige des identifiants uniques.
+                    ForEach(Array(upcoming.enumerated()), id: \.offset) { pair in
+                        TrackRow(track: pair.element, context: engine.queue, showArtwork: true)
+                    }
+                    .onDelete { offsets in
+                        let absolute = offsets.map { $0 + engine.queueIndex + 1 }
+                        engine.removeFromQueue(atQueueIndices: absolute)
+                    }
+                    .onMove { from, to in
+                        engine.moveUpcoming(from: from, to: to)
                     }
                 }
             }
@@ -26,16 +36,24 @@ struct QueueView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack {
+                    HStack(spacing: 14) {
                         Image(systemName: "shuffle")
                             .foregroundStyle(engine.shuffleEnabled ? LumeTheme.accent : .secondary)
                             .onTapGesture { engine.shuffleEnabled.toggle() }
+                            .accessibilityLabel("Lecture aléatoire")
+                            .accessibilityAddTraits(.isButton)
                         Image(systemName: engine.repeatMode == .one ? "repeat.1" : "repeat")
                             .foregroundStyle(engine.repeatMode == .off ? .secondary : LumeTheme.accent)
+                            .onTapGesture { cycleRepeat() }
+                            .accessibilityLabel("Répétition")
+                            .accessibilityAddTraits(.isButton)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Fermer") { dismiss() }
+                    HStack(spacing: 12) {
+                        EditButton()
+                        Button("Fermer") { dismiss() }
+                    }
                 }
             }
         }
@@ -44,5 +62,13 @@ struct QueueView: View {
     private var upcomingTracks: [Track] {
         guard engine.queueIndex + 1 < engine.queue.count else { return [] }
         return Array(engine.queue[(engine.queueIndex + 1)...])
+    }
+
+    private func cycleRepeat() {
+        switch engine.repeatMode {
+        case .off: engine.repeatMode = .all
+        case .all: engine.repeatMode = .one
+        case .one: engine.repeatMode = .off
+        }
     }
 }

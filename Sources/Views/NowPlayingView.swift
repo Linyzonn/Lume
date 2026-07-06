@@ -1,5 +1,6 @@
 import SwiftUI
 import MediaPlayer
+import AVKit
 
 struct NowPlayingView: View {
     @Binding var isPresented: Bool
@@ -17,6 +18,10 @@ struct NowPlayingView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var bgTop: Color = Color(red: 0.13, green: 0.13, blue: 0.17)
     @State private var bgBottom: Color = .black
+    // Pochette du fond flouté, chargee UNE FOIS par morceau en arriere-plan.
+    // (L'ancienne version relisait et decodait le fichier image dans body a
+    // CHAQUE rendu — soit 4 fois par seconde a cause de currentTime.)
+    @State private var bgImage: UIImage?
 
     var body: some View {
         ZStack {
@@ -40,7 +45,7 @@ struct NowPlayingView: View {
             .environment(\.colorScheme, .dark)
             .offset(y: dragOffset)
         }
-        .task(id: engine.currentTrack?.id) { updateAmbiance() }
+        .task(id: engine.currentTrack?.id) { await updateAmbiance() }
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showLyrics) { LyricsView() }
         .sheet(isPresented: $showEQ) { EqualizerView() }
@@ -71,11 +76,9 @@ struct NowPlayingView: View {
         ZStack {
             LinearGradient(colors: [bgTop, bgBottom], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
-            if let track = engine.currentTrack, let img = library.artworkImage(for: track) {
+            if let img = bgImage {
                 // CRITIQUE : une Image .scaledToFill() SANS frame ni clip prend la
-                // taille necessaire pour couvrir (ex. 852x852 pour une pochette
-                // carree sur un ecran 393x852) et GONFLE toute la mise en page :
-                // titre pousse hors ecran a gauche, barres qui debordent, etc.
+                // taille necessaire pour couvrir et GONFLE toute la mise en page.
                 // On la contraint donc exactement a la taille de l'ecran.
                 GeometryReader { geo in
                     Image(uiImage: img)
@@ -89,7 +92,7 @@ struct NowPlayingView: View {
                 .ignoresSafeArea()
             }
             // Voile sombre progressif : garantit que titre / temps / boutons (texte blanc)
-            // restent lisibles meme quand la pochette est tres claire (ex. fond blanc).
+            // restent lisibles meme quand la pochette est tres claire.
             LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.35), .black.opacity(0.82)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
@@ -104,21 +107,13 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
         .contentShape(Rectangle())
-        .overlay(alignment: .center) {
-            Text("v18")
-                .font(.system(size: 15, weight: .heavy))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(LumeTheme.accent))
-                .offset(y: 26)
-        }
         .overlay(alignment: .trailing) {
             Button { isPresented = false } label: {
                 Image(systemName: "chevron.down")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.85))
             }
+            .accessibilityLabel("Fermer le lecteur")
         }
         .onTapGesture { isPresented = false }
     }
@@ -137,9 +132,7 @@ struct NowPlayingView: View {
     private var trackInfo: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                // NOTE : ne PAS remettre .fixedSize ici. Combine avec lineLimit,
-                // il faisait deborder le texte hors de l'ecran (on voyait la fin
-                // du titre depasser sur le bord gauche).
+                // NOTE : ne PAS remettre .fixedSize ici (deborde hors ecran).
                 Text(displayTitle)
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.white)
@@ -147,8 +140,6 @@ struct NowPlayingView: View {
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                // Artiste(s) cliquable(s) : ouvre le dossier de l'artiste.
-                // S'il y en a plusieurs, un menu propose de choisir lequel.
                 Group {
                     let names = engine.currentTrack?.artistList ?? []
                     if names.count > 1 {
@@ -185,14 +176,10 @@ struct NowPlayingView: View {
     }
 
     private var displayArtist: String {
-        // On affiche l'artiste TEL QUEL. L'ancien decoupage sur "," "&" "/"
-        // massacrait les noms legitimes : "AC/DC" -> "AC +1",
-        // "Tyler, The Creator" -> "Tyler +1", "Earth, Wind & Fire" -> "Earth +2".
         let a = (engine.currentTrack?.artist ?? "").trimmingCharacters(in: .whitespaces)
         return a.isEmpty ? "Artiste inconnu" : a
     }
 
-    // Nom d'artiste + petit chevron indiquant qu'il est cliquable.
     private var artistLabel: some View {
         HStack(spacing: 5) {
             Text(displayArtist)
@@ -246,6 +233,18 @@ struct NowPlayingView: View {
                 )
             }
             .frame(height: 20)
+            // VoiceOver : la barre devient un element ajustable (balayage
+            // vertical = avancer / reculer de 10 secondes).
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Position de lecture")
+            .accessibilityValue("\(engine.currentTime.asTimeString) sur \(engine.duration.asTimeString)")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: engine.skip(by: 10)
+                case .decrement: engine.skip(by: -10)
+                @unknown default: break
+                }
+            }
 
             HStack {
                 Text((isScrubbing ? scrubValue : engine.currentTime).asTimeString)
@@ -262,34 +261,53 @@ struct NowPlayingView: View {
 
     private var transport: some View {
         HStack(spacing: 36) {
-            Button { engine.shuffleEnabled.toggle() } label: {
-                Image(systemName: "shuffle")
-                    .foregroundStyle(engine.shuffleEnabled ? LumeTheme.accent : .white.opacity(0.7))
+            // A vitesse differente de 1x (mode podcast), les sauts de 15 s
+            // remplacent shuffle / repeat, plus utiles dans ce contexte.
+            if engine.playbackRate != 1 {
+                Button { engine.skip(by: -15) } label: { Image(systemName: "gobackward.15") }
+                    .font(.title3)
+                    .accessibilityLabel("Reculer de 15 secondes")
+            } else {
+                Button { engine.shuffleEnabled.toggle() } label: {
+                    Image(systemName: "shuffle")
+                        .foregroundStyle(engine.shuffleEnabled ? LumeTheme.accent : .white.opacity(0.7))
+                }
+                .font(.title3)
+                .accessibilityLabel("Lecture aléatoire")
             }
-            .font(.title3)
 
             Button { engine.previous() } label: { Image(systemName: "backward.fill") }
                 .font(.title)
+                .accessibilityLabel("Morceau précédent")
 
             Button { engine.togglePlayPause() } label: {
                 Image(systemName: engine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 72))
             }
+            .accessibilityLabel(engine.isPlaying ? "Pause" : "Lecture")
 
             Button { engine.next() } label: { Image(systemName: "forward.fill") }
                 .font(.title)
+                .accessibilityLabel("Morceau suivant")
 
-            Button { cycleRepeat() } label: {
-                Image(systemName: engine.repeatMode == .one ? "repeat.1" : "repeat")
-                    .foregroundStyle(engine.repeatMode == .off ? .white.opacity(0.7) : LumeTheme.accent)
+            if engine.playbackRate != 1 {
+                Button { engine.skip(by: 15) } label: { Image(systemName: "goforward.15") }
+                    .font(.title3)
+                    .accessibilityLabel("Avancer de 15 secondes")
+            } else {
+                Button { cycleRepeat() } label: {
+                    Image(systemName: engine.repeatMode == .one ? "repeat.1" : "repeat")
+                        .foregroundStyle(engine.repeatMode == .off ? .white.opacity(0.7) : LumeTheme.accent)
+                }
+                .font(.title3)
+                .accessibilityLabel("Répétition")
             }
-            .font(.title3)
         }
         .foregroundStyle(.white)
         .padding(.vertical, 8)
     }
 
-    // MARK: - Volume systeme (le boost est desormais dans le panneau « Son »)
+    // MARK: - Volume systeme (le boost est dans le panneau « Son »)
 
     private var volumeSection: some View {
         HStack(spacing: 12) {
@@ -305,11 +323,18 @@ struct NowPlayingView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 44) {
+        HStack(spacing: 36) {
             Button { showLyrics = true } label: { Image(systemName: "quote.bubble") }
+                .accessibilityLabel("Paroles")
             Button { showEQ = true } label: { Image(systemName: "slider.vertical.3") }
+                .accessibilityLabel("Son et égaliseur")
+            // Bouton AirPlay / sorties audio (casque BT, enceintes, TV...).
+            RoutePickerView()
+                .frame(width: 30, height: 30)
+                .accessibilityLabel("Sortie audio et AirPlay")
             sleepTimerMenu
             Button { showQueue = true } label: { Image(systemName: "list.bullet") }
+                .accessibilityLabel("File d'attente")
         }
         .font(.title3)
         .foregroundStyle(.white.opacity(0.8))
@@ -338,6 +363,7 @@ struct NowPlayingView: View {
             Image(systemName: sleepTimer.isActive ? "moon.fill" : "moon")
                 .foregroundStyle(sleepTimer.isActive ? LumeTheme.accent : Color.white.opacity(0.8))
         }
+        .accessibilityLabel("Minuteur de sommeil")
     }
 
     private func cycleRepeat() {
@@ -348,11 +374,25 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Ambiance (couleurs depuis la pochette)
+    // MARK: - Ambiance (fond + couleurs, calcules UNE fois par morceau)
 
-    private func updateAmbiance() {
-        guard let track = engine.currentTrack,
-              let img = library.artworkImage(for: track) else {
+    private func updateAmbiance() async {
+        guard let track = engine.currentTrack, track.artworkFileName != nil else {
+            bgImage = nil
+            withAnimation(.easeInOut(duration: 0.6)) {
+                bgTop = Color(red: 0.13, green: 0.13, blue: 0.17)
+                bgBottom = .black
+            }
+            return
+        }
+        // Decodage de l'image HORS du thread principal (et mise en cache par
+        // la bibliotheque) : le lecteur ne rame plus a l'ouverture.
+        let lib = library
+        let img = await Task.detached(priority: .userInitiated) {
+            lib.thumbnail(for: track, pixelSize: 900)
+        }.value
+        bgImage = img
+        guard let img else {
             withAnimation(.easeInOut(duration: 0.6)) {
                 bgTop = Color(red: 0.13, green: 0.13, blue: 0.17)
                 bgBottom = .black
@@ -368,11 +408,6 @@ struct NowPlayingView: View {
 }
 
 // Curseur de volume systeme (enveloppe MPVolumeView).
-// Deux pieges corriges ici :
-//  1. showsRouteButton est deprecie et inserait un bouton AirPlay DANS la vue,
-//     qui ecrasait / decalait le slider dans ses 34 pt de hauteur.
-//  2. Un frame initial .zero fait parfois apparaitre le slider invisible ou
-//     mal positionne au premier affichage -> on donne un frame non nul.
 struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
         let v = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 280, height: 34))
@@ -384,6 +419,17 @@ struct SystemVolumeSlider: UIViewRepresentable {
         return v
     }
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+}
+
+// Bouton AirPlay / sorties audio (enveloppe AVRoutePickerView).
+struct RoutePickerView: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let v = AVRoutePickerView()
+        v.tintColor = UIColor.white.withAlphaComponent(0.8)
+        v.activeTintColor = UIColor(LumeTheme.accent)
+        return v
+    }
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
 // MARK: - Couleurs d'ambiance depuis la pochette

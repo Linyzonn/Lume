@@ -124,7 +124,11 @@ final class LumeTests: XCTestCase {
     // MARK: - Fusion des doublons (LibraryStore)
 
     func testRemoveDuplicatesMergesAndRemaps() {
-        let store = LibraryStore()
+        let store = LibraryStore(
+            rootDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LumeTests-\(UUID().uuidString)", isDirectory: true),
+            documentsDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LumeTestsDocs-\(UUID().uuidString)", isDirectory: true))
         let old = Date(timeIntervalSinceNow: -3600)
 
         let original = makeTrack(title: "Run This Town", artist: "JAY-Z",
@@ -150,7 +154,11 @@ final class LumeTests: XCTestCase {
     }
 
     func testRemoveDuplicatesIgnoresDifferentDurations() {
-        let store = LibraryStore()
+        let store = LibraryStore(
+            rootDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LumeTests-\(UUID().uuidString)", isDirectory: true),
+            documentsDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LumeTestsDocs-\(UUID().uuidString)", isDirectory: true))
         // Meme titre/artiste mais durees eloignees (ex. version radio vs live) :
         // ce ne sont PAS des doublons.
         store.tracks = [makeTrack(title: "Song", artist: "A", duration: 180),

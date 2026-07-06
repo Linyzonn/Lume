@@ -60,6 +60,9 @@ struct RootView: View {
                 Task { await library.scanInbox() }
             } else if phase == .background {
                 engine.persistSession()
+                // Les stats sont sauvegardees en differe (5 s) : au passage
+                // en arriere-plan, on force l'ecriture pour ne rien perdre.
+                library.flushStatsNow()
             }
         }
     }

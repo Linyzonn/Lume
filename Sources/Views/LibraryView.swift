@@ -20,6 +20,7 @@ struct LibraryView: View {
     @State private var trackToEdit: Track?
     @State private var showImporter = false
     @State private var trackForPlaylist: Track?
+    @State private var showImportErrors = false
 
     var body: some View {
         NavigationStack {
@@ -77,6 +78,18 @@ struct LibraryView: View {
                 if library.isImporting {
                     importingOverlay
                 }
+            }
+            // Recapitulatif des fichiers refuses : l'utilisateur sait
+            // POURQUOI un fichier n'apparait pas, au lieu d'un silence.
+            .onChange(of: library.isImporting) { importing in
+                if !importing && !library.importErrors.isEmpty {
+                    showImportErrors = true
+                }
+            }
+            .alert("Certains fichiers n'ont pas été importés", isPresented: $showImportErrors) {
+                Button("OK", role: .cancel) { library.importErrors = [] }
+            } message: {
+                Text(library.importErrors.joined(separator: "\n"))
             }
             .safeAreaInset(edge: .bottom) {
                 // Espace pour ne pas masquer la derniere ligne sous le mini-lecteur.
@@ -204,6 +217,12 @@ struct LibraryView: View {
         Button {
             engine.playSingle(track, in: library.tracks)
         } label: { Label("Lire", systemImage: "play") }
+        Button {
+            engine.playNext(track)
+        } label: { Label("Lire ensuite", systemImage: "text.line.first.and.arrowtriangle.forward") }
+        Button {
+            engine.addToQueue(track)
+        } label: { Label("Ajouter à la file", systemImage: "text.append") }
         Button {
             trackForPlaylist = track
         } label: { Label("Ajouter à une playlist", systemImage: "text.badge.plus") }
