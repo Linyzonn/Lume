@@ -4,6 +4,21 @@ import AudioToolbox
 import MediaPlayer
 import Combine
 
+// Position / duree de lecture, publiees dans un objet SEPARE du moteur.
+//
+// POURQUOI : la position avance 4 fois par seconde. Quand elle etait
+// @Published directement sur PlayerEngine, CHAQUE vue observant le moteur
+// (chaque TrackRow d'une liste, la bibliotheque entiere...) etait invalidee
+// et re-rendue 4x/s pendant la lecture -> defilement saccade.
+// Desormais, seules les vues qui affichent vraiment la progression
+// (mini-lecteur, barre du lecteur, paroles synchronisees) observent cet
+// objet ; le reste de l'interface n'est plus reveille par le tic d'horloge.
+@MainActor
+final class PlaybackProgress: ObservableObject {
+    @Published var time: Double = 0
+    @Published var duration: Double = 0
+}
+
 // Moteur de lecture base sur AVAudioEngine.
 // Chaine audio (x2 pour le crossfade / gapless) :
 //   playerNode -> egaliseur -> mixeur dedie -> sous-mixeur
@@ -14,10 +29,19 @@ final class PlayerEngine: ObservableObject {
     // Etat observable par l'interface.
     @Published var currentTrack: Track?
     @Published var isPlaying = false
-    @Published var currentTime: Double = 0
-    @Published var duration: Double = 0
     @Published var queue: [Track] = []
     @Published var queueIndex = 0
+
+    // Progression : voir PlaybackProgress ci-dessus. Le moteur continue de
+    // lire/ecrire currentTime et duration comme avant ; les changements sont
+    // simplement republies via `progress` au lieu d'invalider tout le moteur.
+    let progress = PlaybackProgress()
+    var currentTime: Double = 0 {
+        didSet { if currentTime != oldValue { progress.time = currentTime } }
+    }
+    var duration: Double = 0 {
+        didSet { if duration != oldValue { progress.duration = duration } }
+    }
 
     // VRAI mode aleatoire : quand il s'active, la file est melangee UNE FOIS
     // (Fisher-Yates) en gardant le morceau courant en tete. Avantages par
@@ -199,7 +223,9 @@ final class PlayerEngine: ObservableObject {
         setupEngine()
         setupRemoteCommands()
         observeInterruptions()
-        startTicker()
+        // NOTE batterie : le ticker n'est PLUS demarre ici. Il ne tourne que
+        // pendant la lecture (voir startTicker / stopTicker) — avant, il
+        // reveillait le CPU 4x/seconde en permanence, meme a l'arret.
         restoreAudioSettings()
         PlayerEngine.shared = self
     }
@@ -249,7 +275,10 @@ final class PlayerEngine: ObservableObject {
         engine.connect(limiter, to: engine.mainMixerNode, format: mixFormat)
 
         engine.prepare()
-        try? engine.start()
+        // NOTE batterie : on ne demarre PAS le moteur ici. Un AVAudioEngine
+        // demarre fait tourner son thread de rendu et garde le materiel audio
+        // alimente EN CONTINU, meme sans lecture. Il est demarre a la demande
+        // (load / resume) et mis en pause des que la lecture s'arrete.
     }
 
     private func configureEQ(_ eq: AVAudioUnitEQ) {
@@ -550,6 +579,7 @@ final class PlayerEngine: ObservableObject {
             isPlaying = true
             updateNowPlaying()
             persistSession()
+            startTicker()
         }
     }
 
@@ -639,6 +669,10 @@ final class PlayerEngine: ObservableObject {
         flushListenTime()
         persistSession()
         updateNowPlaying()
+        // Economie d'energie : plus de tic d'horloge ni de thread de rendu
+        // audio tant que rien ne joue.
+        stopTicker()
+        engine.pause()
     }
 
     func resume() {
@@ -647,6 +681,7 @@ final class PlayerEngine: ObservableObject {
         if isCrossfading { players[1 - activeIndex].play() }
         isPlaying = true
         updateNowPlaying()
+        startTicker()
     }
 
     func next() {
@@ -725,6 +760,8 @@ final class PlayerEngine: ObservableObject {
         isPlaying = false
         currentTime = 0
         updateNowPlaying()
+        stopTicker()
+        engine.pause()
     }
 
     // Volume de sortie global (utilise par le fondu du minuteur de sommeil).
@@ -786,6 +823,9 @@ final class PlayerEngine: ObservableObject {
         load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true)
         if !wasPlaying { pause() }
         currentTime = time
+        // La position poussee a l'ecran verrouille n'est plus rafraichie en
+        // continu : apres un seek (surtout en pause), on la synchronise ici.
+        updateNowPlayingElapsed()
     }
 
     // MARK: - Crossfade
@@ -808,6 +848,10 @@ final class PlayerEngine: ObservableObject {
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] timer in
             Task { @MainActor in
                 guard let self else { timer.invalidate(); return }
+                // Pause utilisateur en plein fondu : on FIGE le fondu (les
+                // lecteurs sont en pause, le moteur aussi) au lieu de le
+                // laisser se terminer en silence — il reprend au resume().
+                guard self.isPlaying else { return }
                 step += 1
                 let p = Float(step) / Float(steps)
                 self.players[oldPlayer].volume = max(0, 1 - p)
@@ -857,13 +901,24 @@ final class PlayerEngine: ObservableObject {
     }
 
     // MARK: - Tic d'horloge (temps + crossfade + gapless + sauvegarde)
+    //
+    // Le ticker ne tourne QUE pendant la lecture : demarre au play, arrete
+    // au pause / stop. Avant, il tournait en permanence des l'init (4 reveils
+    // CPU par seconde, app en arriere-plan comprise) pour rien.
 
     private func startTicker() {
+        guard ticker == nil else { return }
         let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
         ticker = t
+    }
+
+    private func stopTicker() {
+        ticker?.invalidate()
+        ticker = nil
+        lastTickDate = nil
     }
 
     private func tick() {
@@ -922,7 +977,11 @@ final class PlayerEngine: ObservableObject {
             lastPersistDate = Date()
             persistSession()
         }
-        updateNowPlayingElapsed()
+        // NOTE batterie : on ne pousse PLUS la position vers l'ecran
+        // verrouille a chaque tic (4 ecritures IPC / seconde). iOS interpole
+        // lui-meme la position a partir de PlaybackRate ; il suffit de mettre
+        // les infos a jour aux changements d'etat (play/pause/seek/piste),
+        // ce que updateNowPlaying() fait deja.
     }
 
     // MARK: - Ecran verrouille / centre de controle

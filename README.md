@@ -2,6 +2,15 @@
 
 Lume est un lecteur de musique **local** pour iPhone : il lit **tes propres fichiers** (MP3, M4A, AAC, FLAC, WAV), sans pub et sans compte. **La lecture fonctionne 100 % hors connexion** — Internet ne sert qu'aux bonus : l'onglet **Découvrir** (recommandations), la récupération de pochettes, de photos d'artistes et de paroles en ligne.
 
+## 🆕 Nouveautés 2.2
+
+- 🔋 **Grosse économie de batterie** : le moteur audio et l'horloge interne ne tournent plus que pendant la lecture (avant, ils tournaient en permanence, même app en pause en arrière-plan), et l'écran verrouillé n'est plus mis à jour 4 fois par seconde.
+- 🚀 **Défilement beaucoup plus fluide pendant la lecture** : la position du morceau ne réveille plus toute l'interface 4 fois par seconde — seuls le mini-lecteur, la barre de lecture et les paroles la suivent.
+- ✨ **Découvrir se renouvelle vraiment** : le bouton Actualiser contourne désormais le cache, les artistes du profil tournent à chaque rafraîchissement (tirage pondéré), les titres sont piochés dans des viviers bien plus larges, et l'app **mémorise ce qu'elle t'a déjà proposé** pour ne pas te le resservir. Les titres déjà dans tes envies ne sont plus reproposés.
+- 🎬 **Démarrage sans "saut" visuel** : l'écran de lancement se prolonge dans un écran d'accueil identique, le nom **Lume** apparaît, puis tout fond vers l'app.
+- 🪪 **Identité renforcée** : glyphe et nom de l'app à l'accueil, dans une bibliothèque vide, au chargement de Découvrir et dans À propos.
+- 🖼️ Les pochettes de Découvrir sont mises en cache (plus de re-téléchargement à chaque visite).
+
 ## ✨ Ce que fait l'app (v2.0)
 
 ### Lecture

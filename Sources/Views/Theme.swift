@@ -41,6 +41,33 @@ enum LumeTheme {
     static var accentSecondary: Color { current.secondary }
 }
 
+// MARK: - Marque Lume reutilisable (rappel d'identite dans l'app)
+//
+// Petit glyphe (le meme que l'icone / l'ecran de lancement) accompagne du
+// nom de l'app en style "rounded". Utilise dans les etats vides, l'ecran
+// de chargement de Decouvrir et la section A propos : l'identite de Lume
+// est presente aux moments cles sans envahir les listes.
+struct LumeBrandMark: View {
+    var glyphSize: CGFloat = 26
+    var showName = true
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image("LaunchGlyph")
+                .resizable()
+                .scaledToFit()
+                .frame(width: glyphSize, height: glyphSize)
+                .clipShape(RoundedRectangle(cornerRadius: glyphSize * 0.22, style: .continuous))
+            if showName {
+                Text("Lume")
+                    .font(.system(size: glyphSize * 0.72, weight: .bold, design: .rounded))
+                    .foregroundStyle(LumeTheme.accent)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 // Pochette d'album reutilisable. Affiche une jolie pochette par defaut si absente.
 // La miniature est chargee EN ARRIERE-PLAN (et mise en cache) : sans cela,
 // chaque ligne de liste relirait et decoderait le fichier image sur le thread

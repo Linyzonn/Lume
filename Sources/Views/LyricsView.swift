@@ -48,7 +48,7 @@ struct LyricsView: View {
     private func content(for track: Track) -> some View {
         if let raw = track.lyrics, !raw.isEmpty {
             if let lines = LRCParser.parse(raw) {
-                SyncedLyricsView(lines: lines)
+                SyncedLyricsView(lines: lines, progress: engine.progress)
             } else {
                 plainLyrics(raw)
             }
@@ -138,10 +138,12 @@ struct LyricsView: View {
 
 private struct SyncedLyricsView: View {
     let lines: [LyricLine]
+    // La position est publiee 4x/s via engine.progress (objet dedie) : la
+    // ligne active suit la musique sans invalider le reste de l'interface.
+    @ObservedObject var progress: PlaybackProgress
     @EnvironmentObject var engine: PlayerEngine
 
     var body: some View {
-        // engine.currentTime est publie 4x/seconde -> la ligne active suit la musique.
         let currentID = currentLineID
         ScrollViewReader { proxy in
             ScrollView {
@@ -180,6 +182,6 @@ private struct SyncedLyricsView: View {
 
     // Derniere ligne dont l'horodatage est deja passe.
     private var currentLineID: Int? {
-        lines.last(where: { $0.time <= engine.currentTime })?.id
+        lines.last(where: { $0.time <= progress.time })?.id
     }
 }

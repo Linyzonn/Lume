@@ -241,10 +241,15 @@ struct LibraryView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "music.note.house.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(LumeTheme.accent.gradient)
-            Text("Ta bibliothèque est vide")
+            // Rappel d'identite : le meme glyphe que l'icone et l'ecran de
+            // lancement accueille l'utilisateur dans une bibliotheque vide.
+            Image("LaunchGlyph")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 84, height: 84)
+                .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .shadow(color: LumeTheme.accent.opacity(0.35), radius: 18, y: 8)
+            Text("Bienvenue dans Lume")
                 .font(.title3.weight(.semibold))
             Text("Touche le bouton + en haut à droite pour importer tes fichiers audio (MP3, M4A, FLAC, WAV…) depuis l'app Fichiers.")
                 .font(.subheadline)

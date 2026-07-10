@@ -9,8 +9,6 @@ struct NowPlayingView: View {
     @EnvironmentObject var sleepTimer: SleepTimer
     @State private var selectedArtist: SelectedArtist?
 
-    @State private var isScrubbing = false
-    @State private var scrubValue: Double = 0
     @State private var showQueue = false
     @State private var showLyrics = false
     @State private var showEQ = false
@@ -36,7 +34,9 @@ struct NowPlayingView: View {
                     .highPriorityGesture(dismissDrag)
                 Spacer(minLength: 16)
                 trackInfo
-                progressBar
+                // Barre de lecture : sous-vue isolee, seule a observer la
+                // position 4x/s (voir PlaybackProgress dans PlayerEngine).
+                PlaybackScrubberView(progress: engine.progress, waveform: waveform)
                 transport
                 volumeSection
                 bottomBar
@@ -201,88 +201,6 @@ struct NowPlayingView: View {
     struct SelectedArtist: Identifiable {
         let name: String
         var id: String { name }
-    }
-
-    // MARK: - Barre de progression (maison, fiable)
-
-    // MARK: - Barre de progression : forme d'onde (avec repli capsule)
-
-    private var progressBar: some View {
-        VStack(spacing: 6) {
-            GeometryReader { geo in
-                let w = geo.size.width
-                let value = isScrubbing ? scrubValue : engine.currentTime
-                let frac = engine.duration > 0 ? CGFloat(value / engine.duration) : 0
-                let clamped = max(0, min(1, frac))
-                Group {
-                    if let wf = waveform {
-                        // Enveloppe du morceau : barres jouees en blanc,
-                        // restantes en transparence.
-                        Canvas { ctx, size in
-                            let n = wf.count
-                            let barW = size.width / CGFloat(n)
-                            for i in 0..<n {
-                                let h = max(3, size.height * CGFloat(wf[i]))
-                                let rect = CGRect(x: CGFloat(i) * barW + barW * 0.15,
-                                                  y: (size.height - h) / 2,
-                                                  width: barW * 0.7,
-                                                  height: h)
-                                let played = CGFloat(i) < clamped * CGFloat(n)
-                                ctx.fill(Path(roundedRect: rect, cornerRadius: barW * 0.3),
-                                         with: .color(played ? Color.white : Color.white.opacity(0.3)))
-                            }
-                        }
-                    } else {
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.white.opacity(0.25)).frame(height: 5)
-                            Capsule().fill(.white).frame(width: w * clamped, height: 5)
-                            Circle().fill(.white)
-                                .frame(width: 15, height: 15)
-                                .shadow(radius: 2)
-                                .offset(x: (w - 15) * clamped)
-                        }
-                    }
-                }
-                .frame(height: 30)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { g in
-                            guard engine.duration > 0 else { return }
-                            isScrubbing = true
-                            let p = min(max(0, g.location.x / w), 1)
-                            scrubValue = Double(p) * engine.duration
-                        }
-                        .onEnded { _ in
-                            guard engine.duration > 0 else { return }
-                            engine.seek(to: scrubValue)
-                            isScrubbing = false
-                        }
-                )
-            }
-            .frame(height: 30)
-            // VoiceOver : la barre devient un element ajustable (balayage
-            // vertical = avancer / reculer de 10 secondes).
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Position de lecture")
-            .accessibilityValue("\(engine.currentTime.asTimeString) sur \(engine.duration.asTimeString)")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: engine.skip(by: 10)
-                case .decrement: engine.skip(by: -10)
-                @unknown default: break
-                }
-            }
-
-            HStack {
-                Text((isScrubbing ? scrubValue : engine.currentTime).asTimeString)
-                Spacer()
-                Text(engine.duration.asTimeString)
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.9))
-        }
-        .padding(.bottom, 10)
     }
 
     // MARK: - Transport
@@ -461,6 +379,98 @@ struct SystemVolumeSlider: UIViewRepresentable {
         return v
     }
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+}
+
+// MARK: - Barre de progression : forme d'onde (avec repli capsule)
+//
+// Sous-vue ISOLEE : c'est la seule partie du lecteur qui observe la position
+// (engine.progress, mise a jour 4x/s). Le reste de NowPlayingView n'est plus
+// re-rendu a chaque tic — voir PlaybackProgress dans PlayerEngine.
+private struct PlaybackScrubberView: View {
+    @EnvironmentObject var engine: PlayerEngine
+    @ObservedObject var progress: PlaybackProgress
+    let waveform: [Float]?
+
+    @State private var isScrubbing = false
+    @State private var scrubValue: Double = 0
+
+    var body: some View {
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let value = isScrubbing ? scrubValue : progress.time
+                let frac = progress.duration > 0 ? CGFloat(value / progress.duration) : 0
+                let clamped = max(0, min(1, frac))
+                Group {
+                    if let wf = waveform {
+                        // Enveloppe du morceau : barres jouees en blanc,
+                        // restantes en transparence.
+                        Canvas { ctx, size in
+                            let n = wf.count
+                            let barW = size.width / CGFloat(n)
+                            for i in 0..<n {
+                                let h = max(3, size.height * CGFloat(wf[i]))
+                                let rect = CGRect(x: CGFloat(i) * barW + barW * 0.15,
+                                                  y: (size.height - h) / 2,
+                                                  width: barW * 0.7,
+                                                  height: h)
+                                let played = CGFloat(i) < clamped * CGFloat(n)
+                                ctx.fill(Path(roundedRect: rect, cornerRadius: barW * 0.3),
+                                         with: .color(played ? Color.white : Color.white.opacity(0.3)))
+                            }
+                        }
+                    } else {
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.25)).frame(height: 5)
+                            Capsule().fill(.white).frame(width: w * clamped, height: 5)
+                            Circle().fill(.white)
+                                .frame(width: 15, height: 15)
+                                .shadow(radius: 2)
+                                .offset(x: (w - 15) * clamped)
+                        }
+                    }
+                }
+                .frame(height: 30)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { g in
+                            guard progress.duration > 0 else { return }
+                            isScrubbing = true
+                            let p = min(max(0, g.location.x / w), 1)
+                            scrubValue = Double(p) * progress.duration
+                        }
+                        .onEnded { _ in
+                            guard progress.duration > 0 else { return }
+                            engine.seek(to: scrubValue)
+                            isScrubbing = false
+                        }
+                )
+            }
+            .frame(height: 30)
+            // VoiceOver : la barre devient un element ajustable (balayage
+            // vertical = avancer / reculer de 10 secondes).
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Position de lecture")
+            .accessibilityValue("\(progress.time.asTimeString) sur \(progress.duration.asTimeString)")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: engine.skip(by: 10)
+                case .decrement: engine.skip(by: -10)
+                @unknown default: break
+                }
+            }
+
+            HStack {
+                Text((isScrubbing ? scrubValue : progress.time).asTimeString)
+                Spacer()
+                Text(progress.duration.asTimeString)
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.9))
+        }
+        .padding(.bottom, 10)
+    }
 }
 
 // Bouton AirPlay / sorties audio (enveloppe AVRoutePickerView).

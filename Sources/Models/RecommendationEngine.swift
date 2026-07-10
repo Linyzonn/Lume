@@ -88,6 +88,46 @@ final class Recommender: ObservableObject {
     private var genreNames: [Int: String] = [:]
     private var bpmCenter: Double?    // tempo median de tes titres preferes
 
+    // MARK: - Memoire des suggestions deja montrees
+    //
+    // Sans elle, rien n'empechait les MEMES titres de revenir a chaque
+    // rafraichissement (les tops Deezer sont tres stables). On garde les
+    // ~400 derniers identifiants proposes : ils sont evites tant qu'il
+    // reste du neuf, et resservis seulement en dernier recours (petite
+    // bibliotheque / catalogue epuise), plutot qu'un ecran vide.
+    private var shownHistory: [Int] = []
+    private var shownHistoryLoaded = false
+    private static let shownHistoryCap = 400
+
+    private static var shownHistoryFile: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lume", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("seenSuggestions.json")
+    }
+
+    private func loadShownHistoryIfNeeded() {
+        guard !shownHistoryLoaded else { return }
+        shownHistoryLoaded = true
+        if let data = try? Data(contentsOf: Self.shownHistoryFile),
+           let ids = try? JSONDecoder().decode([Int].self, from: data) {
+            shownHistory = ids
+        }
+    }
+
+    private func rememberShown(_ ids: [Int]) {
+        loadShownHistoryIfNeeded()
+        // Les plus recents en fin de liste ; on retire les doublons d'abord.
+        shownHistory.removeAll { ids.contains($0) }
+        shownHistory.append(contentsOf: ids)
+        if shownHistory.count > Self.shownHistoryCap {
+            shownHistory.removeFirst(shownHistory.count - Self.shownHistoryCap)
+        }
+        if let data = try? JSONEncoder().encode(shownHistory) {
+            try? data.write(to: Self.shownHistoryFile, options: .atomic)
+        }
+    }
+
     // Score de gout par artiste, du prefere au moins aime.
     static func tasteProfile(library: LibraryStore) -> [(name: String, score: Double)] {
         var scores: [String: Double] = [:]
@@ -120,6 +160,26 @@ final class Recommender: ObservableObject {
                 guard let name = displayNames[key], value > 0 else { return nil }
                 return (name, value)
             }
+    }
+
+    // Tirage pondere SANS remise (methode d'Efraimidis-Spirakis) parmi le
+    // haut du profil. L'artiste n°1 est toujours garde (c'est l'ancre du
+    // profil, elle fixe aussi le genre principal) ; les autres places sont
+    // tirees parmi les ~11 suivants, proportionnellement a leur score.
+    // Resultat : chaque rafraichissement explore un angle different de tes
+    // gouts au lieu de toujours partir des 4 memes artistes.
+    static func sampleArtists(from profile: [(name: String, score: Double)],
+                              count: Int) -> [(name: String, score: Double)] {
+        guard profile.count > count, count > 1 else { return Array(profile.prefix(count)) }
+        var picked = [profile[0]]
+        let pool = Array(profile.dropFirst().prefix(11))
+        let drawn = pool
+            .map { entry in (entry, pow(Double.random(in: 0.0001...1), 1.0 / max(entry.score, 0.001))) }
+            .sorted { $0.1 > $1.1 }
+            .prefix(count - 1)
+            .map { $0.0 }
+        picked.append(contentsOf: drawn)
+        return picked.sorted { $0.score > $1.score }
     }
 
     // Construit les recommandations en ligne a partir du profil.
@@ -159,37 +219,74 @@ final class Recommender: ObservableObject {
         var mainGenreID: Int?
         var mainGenreName: String?
 
+        // Suggestions deja montrees lors des precedents rafraichissements :
+        // on les evite tant qu'il reste des titres jamais proposes.
+        loadShownHistoryIfNeeded()
+        let previouslyShown = Set(shownHistory)
+
+        // Un titre est proposable s'il n'est ni possede, ni deja affiche dans
+        // CE rafraichissement, ni deja dans la liste d'envies.
+        func eligible(_ t: DeezerAPI.TrackItem) -> Bool {
+            !alreadyOwned(t) && !seenIDs.contains(t.id) && !library.isWished(t.id)
+        }
+
+        // Selection en deux passes dans un vivier MELANGE : d'abord les titres
+        // jamais montres, puis (seulement si necessaire) les deja vus.
+        func pick(from pool: [DeezerAPI.TrackItem], count: Int,
+                  reason: (DeezerAPI.TrackItem) -> String) -> [Recommendation] {
+            var out: [Recommendation] = []
+            let shuffled = pool.shuffled()
+            for allowSeen in [false, true] {
+                for t in shuffled where eligible(t) && (allowSeen || !previouslyShown.contains(t.id)) {
+                    out.append(recommendation(from: t, reason: reason(t)))
+                    seenIDs.insert(t.id)
+                    if out.count >= count { return out }
+                }
+            }
+            return out
+        }
+
         // Toutes les donnees d'un artiste (recherche, tops, artistes proches)
-        // sont recuperees EN PARALLELE pour les 4 artistes du profil : le
+        // sont recuperees EN PARALLELE pour les 4 artistes retenus : le
         // rafraichissement passe de ~10-15 s a ~3-4 s. L'assemblage des
         // sections reste sequentiel (ordre stable + deduplication seenIDs).
         struct ArtistBundle {
             let rank: Int
             let artist: DeezerAPI.Artist
             let ownTop: [DeezerAPI.TrackItem]
-            let relatedTops: [[DeezerAPI.TrackItem]]
+            let relatedTops: [(name: String, tracks: [DeezerAPI.TrackItem])]
             let genreID: Int?
         }
 
-        let topProfile = Array(profile.prefix(4))
+        // 4 artistes : le n°1 du profil + 3 tires au sort (ponderes par score).
+        let topProfile = Self.sampleArtists(from: profile, count: 4)
+        // Le vivier est volontairement LARGE (top 35 au lieu de 10) : meme
+        // quand la reponse vient du cache, on pioche au hasard dedans, donc
+        // les suggestions changent d'un rafraichissement a l'autre.
         var bundles: [ArtistBundle] = await withTaskGroup(of: ArtistBundle?.self) { group in
             for (rank, entry) in topProfile.enumerated() {
                 let artistName = entry.name
                 group.addTask {
                     guard let dzArtist = await DeezerAPI.searchArtist(artistName) else { return nil }
-                    async let ownTask = DeezerAPI.topTracks(artistID: dzArtist.id, limit: 10)
-                    async let relatedTask = DeezerAPI.relatedArtists(id: dzArtist.id)
+                    async let ownTask = DeezerAPI.topTracks(artistID: dzArtist.id, limit: 35,
+                                                            ignoreCache: force)
+                    async let relatedTask = DeezerAPI.relatedArtists(id: dzArtist.id,
+                                                                     ignoreCache: force)
                     let genreID: Int? = rank == 0
                         ? await DeezerAPI.artistMainGenreID(artistID: dzArtist.id)
                         : nil
+                    // 3 artistes proches tires AU HASARD parmi les 12 renvoyes
+                    // par Deezer (avant : toujours les 3 premiers).
                     let related = await relatedTask
-                    var relatedTops: [[DeezerAPI.TrackItem]] = []
-                    for rel in related.prefix(3) {
-                        relatedTops.append(await DeezerAPI.topTracks(artistID: rel.id, limit: 4))
+                    var relatedTops: [(String, [DeezerAPI.TrackItem])] = []
+                    for rel in related.shuffled().prefix(3) {
+                        relatedTops.append((rel.name,
+                                            await DeezerAPI.topTracks(artistID: rel.id, limit: 8,
+                                                                      ignoreCache: force)))
                     }
                     return ArtistBundle(rank: rank, artist: dzArtist,
                                         ownTop: await ownTask,
-                                        relatedTops: relatedTops,
+                                        relatedTops: relatedTops.map { (name: $0.0, tracks: $0.1) },
                                         genreID: genreID)
                 }
             }
@@ -210,20 +307,13 @@ final class Recommender: ObservableObject {
 
             var items: [Recommendation] = []
 
-            // 1) Ses titres que tu n'as pas encore.
-            for t in bundle.ownTop where !alreadyOwned(t) && !seenIDs.contains(t.id) {
-                items.append(recommendation(from: t, reason: "Titre de \(dzArtist.name)"))
-                seenIDs.insert(t.id)
-                if items.count >= 4 { break }
-            }
+            // 1) Ses titres que tu n'as pas encore (4, pioches dans le top 35).
+            items += pick(from: bundle.ownTop, count: 4) { _ in "Titre de \(dzArtist.name)" }
 
-            // 2) Les artistes proches (meme univers musical selon Deezer).
-            for tops in bundle.relatedTops {
-                for t in tops where !alreadyOwned(t) && !seenIDs.contains(t.id) {
-                    items.append(recommendation(from: t, reason: "Proche de \(dzArtist.name)"))
-                    seenIDs.insert(t.id)
-                    break   // un titre par artiste proche : plus de variete
-                }
+            // 2) Les artistes proches (meme univers musical selon Deezer) :
+            //    un titre par artiste proche, pour la variete.
+            for related in bundle.relatedTops {
+                items += pick(from: related.tracks, count: 1) { _ in "Proche de \(dzArtist.name)" }
             }
 
             if !items.isEmpty {
@@ -234,13 +324,8 @@ final class Recommender: ObservableObject {
 
         // 3) Tendances du genre principal (au-dela de tes artistes : le STYLE).
         if let gid = mainGenreID {
-            let chart = await DeezerAPI.genreChartTracks(genreID: gid, limit: 15)
-            var items: [Recommendation] = []
-            for t in chart where !alreadyOwned(t) && !seenIDs.contains(t.id) {
-                items.append(recommendation(from: t, reason: mainGenreName ?? "Tendance"))
-                seenIDs.insert(t.id)
-                if items.count >= 8 { break }
-            }
+            let chart = await DeezerAPI.genreChartTracks(genreID: gid, limit: 30, ignoreCache: force)
+            let items = pick(from: chart, count: 8) { _ in mainGenreName ?? "Tendance" }
             if !items.isEmpty {
                 newSections.append(RecommendationSection(
                     title: "Tendances \(mainGenreName ?? "de ton style")",
@@ -269,6 +354,8 @@ final class Recommender: ObservableObject {
             lastRefreshDate = Date()
             isOffline = false
             persistSections()
+            // Memorise ce qui vient d'etre montre pour ne pas le re-proposer.
+            rememberShown(newSections.flatMap { $0.items.map(\.id) })
         }
     }
 

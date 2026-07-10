@@ -55,11 +55,16 @@ enum DeezerAPI {
 
     private struct ListResponse<T: Decodable>: Decodable { let data: [T] }
 
-    private static func get<T: Decodable>(_ urlString: String, as type: T.Type) async -> T? {
+    private static func get<T: Decodable>(_ urlString: String, as type: T.Type,
+                                          ignoreCache: Bool = false) async -> T? {
         guard let url = URL(string: urlString) else { return nil }
         // 1) Cache disque 24 h : les tops, artistes proches et genres bougent
         //    peu. Sert instantanement, sans toucher au reseau ni au quota.
-        if let cached = APICache.data(for: url, maxAge: 24 * 3600) {
+        //    `ignoreCache` (rafraichissement force de Decouvrir) saute cette
+        //    etape : sans cela, le bouton « Actualiser » ressortait les MEMES
+        //    reponses pendant 24 h. La reponse fraiche est quand meme stockee
+        //    (etape 2), et le cache perime reste le repli hors-ligne (etape 3).
+        if !ignoreCache, let cached = APICache.data(for: url, maxAge: 24 * 3600) {
             return try? JSONDecoder().decode(T.self, from: cached)
         }
         // 2) Reseau, avec une petite pause anti rate-limit (l'API Deezer
@@ -87,15 +92,15 @@ enum DeezerAPI {
         return r?.data.first
     }
 
-    static func relatedArtists(id: Int) async -> [Artist] {
-        let r: ListResponse<Artist>? = await get("https://api.deezer.com/artist/\(id)/related?limit=6",
-                                                 as: ListResponse<Artist>.self)
+    static func relatedArtists(id: Int, ignoreCache: Bool = false) async -> [Artist] {
+        let r: ListResponse<Artist>? = await get("https://api.deezer.com/artist/\(id)/related?limit=12",
+                                                 as: ListResponse<Artist>.self, ignoreCache: ignoreCache)
         return r?.data ?? []
     }
 
-    static func topTracks(artistID: Int, limit: Int = 6) async -> [TrackItem] {
+    static func topTracks(artistID: Int, limit: Int = 6, ignoreCache: Bool = false) async -> [TrackItem] {
         let r: ListResponse<TrackItem>? = await get("https://api.deezer.com/artist/\(artistID)/top?limit=\(limit)",
-                                                    as: ListResponse<TrackItem>.self)
+                                                    as: ListResponse<TrackItem>.self, ignoreCache: ignoreCache)
         return r?.data ?? []
     }
 
@@ -142,9 +147,9 @@ enum DeezerAPI {
         let tracks: ListResponse<TrackItem>?
     }
 
-    static func genreChartTracks(genreID: Int, limit: Int = 12) async -> [TrackItem] {
+    static func genreChartTracks(genreID: Int, limit: Int = 12, ignoreCache: Bool = false) async -> [TrackItem] {
         let r: EditorialCharts? = await get("https://api.deezer.com/editorial/\(genreID)/charts",
-                                            as: EditorialCharts.self)
+                                            as: EditorialCharts.self, ignoreCache: ignoreCache)
         return Array((r?.tracks?.data ?? []).prefix(limit))
     }
 

@@ -127,9 +127,10 @@ struct DiscoverView: View {
     }
 
     private var loadingState: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
+            LumeBrandMark(glyphSize: 40)
             ProgressView()
-            Text("Analyse de ton profil musical…")
+            Text("Lume analyse ton profil musical…")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

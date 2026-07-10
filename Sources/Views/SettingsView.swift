@@ -313,7 +313,25 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            LabeledContent("Version", value: appVersion)
+            HStack(spacing: 12) {
+                Image("LaunchGlyph")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 46, height: 46)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Lume")
+                        .font(.system(.headline, design: .rounded).weight(.bold))
+                    Text("Ta musique, ta lumière.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(appVersion)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
         } footer: {
             Text("Lume — lecteur de musique local. Tes fichiers restent sur ton iPhone ; la lecture fonctionne 100 % hors connexion. Internet ne sert qu'à Découvrir, aux pochettes, photos d'artistes et paroles en ligne.")
         }

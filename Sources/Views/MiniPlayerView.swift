@@ -44,14 +44,11 @@ struct MiniPlayerView: View {
             .padding(.vertical, 8)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(alignment: .bottom) {
-                // Fine barre de progression.
-                GeometryReader { geo in
-                    Rectangle()
-                        .fill(LumeTheme.accent)
-                        .frame(width: geo.size.width * progress, height: 2)
-                }
-                .frame(height: 2)
-                .padding(.horizontal, 6)
+                // Fine barre de progression : sous-vue isolee qui observe
+                // engine.progress -> seule cette barre se re-rend 4x/s,
+                // pas tout le mini-lecteur ni le reste de l'interface.
+                MiniProgressLine(progress: engine.progress)
+                    .padding(.horizontal, 6)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
@@ -60,8 +57,23 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var progress: Double {
-        guard engine.duration > 0 else { return 0 }
-        return min(1, max(0, engine.currentTime / engine.duration))
+}
+
+// Barre de progression du mini-lecteur (voir PlaybackProgress dans PlayerEngine).
+private struct MiniProgressLine: View {
+    @ObservedObject var progress: PlaybackProgress
+
+    var body: some View {
+        GeometryReader { geo in
+            Rectangle()
+                .fill(LumeTheme.accent)
+                .frame(width: geo.size.width * fraction, height: 2)
+        }
+        .frame(height: 2)
+    }
+
+    private var fraction: Double {
+        guard progress.duration > 0 else { return 0 }
+        return min(1, max(0, progress.time / progress.duration))
     }
 }
