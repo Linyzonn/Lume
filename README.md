@@ -10,6 +10,10 @@ Lume est un lecteur de musique **local** pour iPhone : il lit **tes propres fich
 - 🎬 **Démarrage sans "saut" visuel** : l'écran de lancement se prolonge dans un écran d'accueil identique, le nom **Lume** apparaît, puis tout fond vers l'app.
 - 🪪 **Identité renforcée** : glyphe et nom de l'app à l'accueil, dans une bibliothèque vide, au chargement de Découvrir et dans À propos.
 - 🖼️ Les pochettes de Découvrir sont mises en cache (plus de re-téléchargement à chaque visite).
+- 🔐 **Import Wi-Fi sécurisé** : un code à 4 chiffres (affiché dans Réglages, régénéré à chaque activation) est maintenant exigé — avant, n'importe qui sur le même Wi-Fi pouvait envoyer des fichiers dans l'app.
+- 🧠 **Import Wi-Fi allégé** : les fichiers reçus sont écrits sur le disque au fil de la réception au lieu d'être accumulés en mémoire — les gros lots de FLAC ne risquent plus de faire fermer l'app en plein transfert.
+- 🧹 Nettoyages automatiques : les playlists ne gardent plus de références vers des morceaux disparus, et le cache des réponses d'API est purgé des entrées de plus de 30 jours à chaque lancement.
+- ⚡ Découvrir économise ~16 requêtes réseau par rafraîchissement quand le tri par tempo n'est pas possible.
 
 ## ✨ Ce que fait l'app (v2.0)
 

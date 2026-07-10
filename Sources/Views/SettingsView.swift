@@ -117,6 +117,16 @@ struct SettingsView: View {
                             .font(.title3.weight(.bold).monospaced())
                             .foregroundStyle(LumeTheme.accent)
                             .textSelection(.enabled)
+                        if !wifiServer.pairingCode.isEmpty {
+                            HStack(spacing: 8) {
+                                Text("Code :")
+                                    .font(.subheadline)
+                                Text(wifiServer.pairingCode)
+                                    .font(.title3.weight(.bold).monospaced())
+                                    .foregroundStyle(LumeTheme.accentSecondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
                     }
                     .padding(.vertical, 2)
                 } else {
@@ -130,7 +140,7 @@ struct SettingsView: View {
         } header: {
             Text("Importer depuis un ordinateur")
         } footer: {
-            Text("Glisse tes fichiers audio dans la page web qui s'ouvre : ils arrivent directement dans Lume, sans câble ni iTunes. Garde l'app ouverte pendant le transfert.")
+            Text("Glisse tes fichiers audio dans la page web qui s'ouvre : ils arrivent directement dans Lume, sans câble ni iTunes. Le code à 4 chiffres protège l'envoi : seul quelqu'un qui le voit sur ton écran peut t'envoyer des fichiers. Garde l'app ouverte pendant le transfert.")
         }
     }
 

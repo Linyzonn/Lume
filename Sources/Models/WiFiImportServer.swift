@@ -15,6 +15,14 @@ import UIKit
 //  - La page HTML envoie chaque fichier en POST brut avec le nom dans
 //    l'URL (/upload?name=...) : cela evite d'avoir a analyser du
 //    multipart/form-data, beaucoup plus fragile.
+//  - SECURITE : un code a 4 chiffres, regenere a chaque activation et
+//    affiche dans les Reglages, est exige pour tout envoi. Sans lui,
+//    n'importe qui sur le meme Wi-Fi (colocation, reseau public...)
+//    pouvait pousser des fichiers dans l'app.
+//  - MEMOIRE : le corps des requetes est ECRIT SUR DISQUE au fil de la
+//    reception (fichier temporaire), plus accumule en RAM. Avant, un lot
+//    de gros FLAC pouvait occuper des centaines de Mo de memoire et faire
+//    tuer l'app par iOS en plein transfert.
 //  - Le transfert n'a lieu que quand l'app est A L'ECRAN (iOS coupe les
 //    connexions TCP en arriere-plan). L'ecran est garde allume pendant
 //    que le serveur tourne (isIdleTimerDisabled).
@@ -23,6 +31,8 @@ final class WiFiImportServer: ObservableObject {
     @Published var isRunning = false
     @Published var address: String?
     @Published var receivedCount = 0
+    // Code d'appairage a 4 chiffres, regenere a chaque activation.
+    @Published var pairingCode: String = ""
 
     weak var library: LibraryStore?
 
@@ -39,9 +49,11 @@ final class WiFiImportServer: ObservableObject {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
             let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!)
+            let code = String(format: "%04d", Int.random(in: 0...9999))
+            pairingCode = code
             l.newConnectionHandler = { [weak self] conn in
-                let http = HTTPConnection(connection: conn) { name, data in
-                    Task { @MainActor in self?.handleFile(name: name, data: data) }
+                let http = HTTPConnection(connection: conn, expectedCode: code) { name, tempURL in
+                    Task { @MainActor in self?.handleFile(name: name, tempURL: tempURL) }
                 } onClosed: { id in
                     Task { @MainActor in self?.connections[id] = nil }
                 }
@@ -75,13 +87,18 @@ final class WiFiImportServer: ObservableObject {
         connections = [:]
         isRunning = false
         address = nil
+        pairingCode = ""
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
-    // Fichier recu : depose dans la boite d'import, puis import (regroupe).
-    private func handleFile(name: String, data: Data) {
-        guard let library else { return }
-        library.saveToInbox(fileName: name, data: data)
+    // Fichier recu (deja sur disque, dans un fichier temporaire) : deplace
+    // dans la boite d'import, puis import regroupe.
+    private func handleFile(name: String, tempURL: URL) {
+        guard let library else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+        library.saveToInbox(fileName: name, movingFrom: tempURL)
         receivedCount += 1
         importSoon()
     }
@@ -133,19 +150,28 @@ final class HTTPConnection {
     let id = UUID()
 
     private let connection: NWConnection
+    private let expectedCode: String
     private var buffer = Data()
-    private let onFileReceived: (String, Data) -> Void
+    private let onFileReceived: (String, URL) -> Void
     private let onClosed: (UUID) -> Void
     private var responded = false
 
-    // Taille maximale d'un fichier accepte (garde-fou memoire).
+    // Reception en continu vers le disque (voir note MEMOIRE en tete de fichier).
+    private var bodyHandle: FileHandle?
+    private var bodyURL: URL?
+    private var bodyRemaining = 0
+    private var bodyFileName = ""
+
+    // Taille maximale d'un fichier accepte (garde-fou disque).
     private static let maxBodySize = 300 * 1024 * 1024
     private static let queue = DispatchQueue(label: "lume.wifi.http")
 
     init(connection: NWConnection,
-         onFileReceived: @escaping (String, Data) -> Void,
+         expectedCode: String,
+         onFileReceived: @escaping (String, URL) -> Void,
          onClosed: @escaping (UUID) -> Void) {
         self.connection = connection
+        self.expectedCode = expectedCode
         self.onFileReceived = onFileReceived
         self.onClosed = onClosed
     }
@@ -156,6 +182,12 @@ final class HTTPConnection {
     }
 
     func close() {
+        // Transfert interrompu : on ne laisse pas trainer de fichier partiel.
+        if let bodyHandle {
+            try? bodyHandle.close()
+            self.bodyHandle = nil
+            if let bodyURL { try? FileManager.default.removeItem(at: bodyURL) }
+        }
         connection.cancel()
         onClosed(id)
     }
@@ -164,8 +196,12 @@ final class HTTPConnection {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                self.buffer.append(data)
-                self.process()
+                if self.bodyHandle != nil {
+                    self.consumeBody(data)
+                } else {
+                    self.buffer.append(data)
+                    self.process()
+                }
             }
             if error != nil || isComplete {
                 if !self.responded { self.close() }
@@ -205,6 +241,22 @@ final class HTTPConnection {
             return
         }
 
+        // Parametres de l'URL : nom du fichier + code d'appairage.
+        var fileName = "import-\(Int(Date().timeIntervalSince1970)).m4a"
+        var providedCode = ""
+        if let comps = URLComponents(string: path) {
+            if let n = comps.queryItems?.first(where: { $0.name == "name" })?.value, !n.isEmpty {
+                fileName = (n as NSString).lastPathComponent
+            }
+            providedCode = comps.queryItems?.first(where: { $0.name == "code" })?.value ?? ""
+        }
+
+        // SECURITE : sans le bon code (affiche dans l'app), pas d'envoi.
+        guard providedCode == expectedCode else {
+            respond(status: "403 Forbidden", body: Data("Code incorrect".utf8))
+            return
+        }
+
         // Content-Length obligatoire pour savoir quand le corps est complet.
         var contentLength = 0
         for line in lines.dropFirst() {
@@ -219,20 +271,45 @@ final class HTTPConnection {
             return
         }
 
-        let bodyStart = headerRange.upperBound
-        guard buffer.count - bodyStart >= contentLength else { return }   // corps incomplet : on attend
-
-        let body = buffer.subdata(in: bodyStart..<(bodyStart + contentLength))
-
-        // Nom du fichier passe dans l'URL : /upload?name=Mon%20titre.mp3
-        var fileName = "import-\(Int(Date().timeIntervalSince1970)).m4a"
-        if let comps = URLComponents(string: path),
-           let n = comps.queryItems?.first(where: { $0.name == "name" })?.value,
-           !n.isEmpty {
-            fileName = (n as NSString).lastPathComponent
+        // Ouverture du fichier temporaire de reception, puis passage en mode
+        // "streaming" : tout ce qui arrive est ecrit directement sur disque.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lume-upload-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: tmp.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: tmp) else {
+            respond(status: "500 Internal Server Error", body: Data("Erreur disque".utf8))
+            return
         }
+        bodyHandle = handle
+        bodyURL = tmp
+        bodyRemaining = contentLength
+        bodyFileName = fileName
 
-        onFileReceived(fileName, body)
+        // Une partie du corps est peut-etre deja arrivee avec les en-tetes.
+        let leftover = buffer.subdata(in: headerRange.upperBound..<buffer.count)
+        buffer = Data()
+        if !leftover.isEmpty { consumeBody(leftover) }
+    }
+
+    // Ecrit un morceau du corps sur disque ; repond quand tout est recu.
+    private func consumeBody(_ data: Data) {
+        guard let handle = bodyHandle else { return }
+        let chunk = data.count <= bodyRemaining ? data : data.prefix(bodyRemaining)
+        do {
+            try handle.write(contentsOf: chunk)
+        } catch {
+            close()
+            return
+        }
+        bodyRemaining -= chunk.count
+        guard bodyRemaining <= 0 else { return }
+
+        try? handle.close()
+        bodyHandle = nil
+        if let url = bodyURL {
+            bodyURL = nil
+            onFileReceived(bodyFileName, url)
+        }
         respond(body: Data("OK".utf8))
     }
 
@@ -248,7 +325,7 @@ final class HTTPConnection {
         })
     }
 
-    // Page servie au navigateur du PC : zone de glisser-deposer + envoi.
+    // Page servie au navigateur du PC : code d'appairage + glisser-deposer.
     private static let pageHTML = """
     <!doctype html>
     <html lang="fr"><head>
@@ -259,9 +336,14 @@ final class HTTPConnection {
       body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#12121a;color:#eee;
            display:flex;flex-direction:column;align-items:center;padding:40px 16px;margin:0}
       h1{font-size:28px;margin:0 0 4px}
-      p{color:#9a9ab0;margin:0 0 28px}
+      p{color:#9a9ab0;margin:0 0 20px;text-align:center}
+      #codebox{display:flex;gap:10px;align-items:center;margin-bottom:22px}
+      #code{font-size:22px;letter-spacing:8px;width:130px;text-align:center;padding:8px 4px;
+            border-radius:10px;border:1px solid #3a3a52;background:#1a1a26;color:#fff}
       #drop{width:min(520px,90vw);border:2px dashed #6b5ceb;border-radius:18px;padding:56px 20px;
-            text-align:center;font-size:17px;color:#c9c9e0;transition:.15s;background:#1a1a26}
+            text-align:center;font-size:17px;color:#c9c9e0;transition:.15s;background:#1a1a26;
+            opacity:.35;pointer-events:none}
+      #drop.ready{opacity:1;pointer-events:auto}
       #drop.over{background:#241f4d;border-color:#eb5c9e}
       #pick{margin-top:14px}
       ul{list-style:none;padding:0;width:min(520px,90vw)}
@@ -270,20 +352,28 @@ final class HTTPConnection {
       small{color:#9a9ab0}
     </style></head><body>
     <h1>&#127925; Lume</h1>
-    <p>D&eacute;pose tes fichiers audio, ils arrivent directement sur l'iPhone.</p>
+    <p>Saisis le <b>code &agrave; 4 chiffres</b> affich&eacute; dans les R&eacute;glages de Lume,<br>puis d&eacute;pose tes fichiers audio.</p>
+    <div id="codebox"><input id="code" inputmode="numeric" maxlength="4" placeholder="&#8226;&#8226;&#8226;&#8226;" autofocus></div>
     <div id="drop">
       Glisse tes fichiers ici (MP3, M4A, FLAC, WAV&hellip;)<br><small>ou</small><br>
       <input type="file" id="pick" multiple accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.aif,.aiff">
     </div>
     <ul id="list"></ul>
     <script>
-    const drop=document.getElementById('drop'),list=document.getElementById('list');
+    const drop=document.getElementById('drop'),list=document.getElementById('list'),
+          codeInput=document.getElementById('code');
+    codeInput.addEventListener('input',()=>{
+      drop.classList.toggle('ready', codeInput.value.trim().length===4);
+    });
     async function send(file){
       const li=document.createElement('li');
       li.textContent=file.name+' \\u2026 envoi';
       list.prepend(li);
       try{
-        const r=await fetch('/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});
+        const r=await fetch('/upload?name='+encodeURIComponent(file.name)
+                            +'&code='+encodeURIComponent(codeInput.value.trim()),
+                            {method:'POST',body:file});
+        if(r.status===403){ li.textContent=file.name+' \\u274c code incorrect'; return; }
         li.textContent=file.name+(r.ok?' \\u2705 re\\u00e7u':' \\u274c erreur');
       }catch(e){ li.textContent=file.name+' \\u274c erreur r\\u00e9seau'; }
     }

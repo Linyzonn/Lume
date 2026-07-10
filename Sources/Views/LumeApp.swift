@@ -41,6 +41,9 @@ struct LumeApp: App {
             .onAppear {
                 engine.library = library
                 sleepTimer.attach(engine)
+                // Menage du cache d'API (entrees > 30 jours), hors du thread
+                // principal pour ne pas ralentir le lancement.
+                Task.detached(priority: .utility) { APICache.purgeStale() }
             }
             // « Ouvrir avec Lume » : un fichier audio partage depuis
             // Fichiers, Safari, Mail... arrive ici et est importe.

@@ -41,6 +41,23 @@ enum APICache {
         try? data.write(to: file(for: url), options: .atomic)
     }
 
+    // Menage : supprime les reponses en cache plus vieilles que `olderThan`.
+    // Le dossier grossissait indefiniment (un fichier par URL interrogee) ;
+    // meme si iOS peut purger Library/Caches sous pression, autant garder la
+    // maison propre nous-memes. Appele une fois par lancement, en arriere-plan.
+    nonisolated static func purgeStale(olderThan age: TimeInterval = 30 * 86400) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: directory,
+                                                      includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-age)
+        for item in items {
+            guard let values = try? item.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modified = values.contentModificationDate,
+                  modified < cutoff else { continue }
+            try? fm.removeItem(at: item)
+        }
+    }
+
     // Requete avec cache : cache frais -> reseau -> cache perime (hors-ligne).
     static func fetch(url: URL,
                       maxAge: TimeInterval,

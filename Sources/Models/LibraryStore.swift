@@ -177,6 +177,13 @@ final class LibraryStore: ObservableObject {
             FileManager.default.fileExists(atPath: tracksDir.appendingPathComponent($0.fileName).path)
         }
         playlists = decoded.playlists
+        // Nettoyage des references orphelines : si des morceaux ont disparu
+        // (fichier supprime hors de l'app, restauration partielle...), les
+        // playlists ne doivent pas garder d'identifiants morts.
+        let validIDs = Set(tracks.map(\.id))
+        for i in playlists.indices {
+            playlists[i].trackIDs.removeAll { !validIDs.contains($0) }
+        }
     }
 
     func save() {
@@ -289,9 +296,12 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Boite de depot (utilisee par l'import Wi-Fi)
 
-    // Ecrit un fichier recu (par le serveur Wi-Fi) dans la boite de depot ;
-    // il sera ensuite importe par scanInbox comme un depot iTunes classique.
-    func saveToInbox(fileName: String, data: Data) {
+    // Deplace un fichier recu (par le serveur Wi-Fi, deja ecrit sur disque
+    // dans un fichier temporaire) vers la boite de depot ; il sera ensuite
+    // importe par scanInbox comme un depot iTunes classique. Le DEPLACEMENT
+    // (pas de lecture en memoire) permet de recevoir de tres gros fichiers
+    // sans jamais peser sur la RAM.
+    func saveToInbox(fileName: String, movingFrom tempURL: URL) {
         let safe = fileName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "\\", with: "-")
@@ -299,7 +309,11 @@ final class LibraryStore: ObservableObject {
         if FileManager.default.fileExists(atPath: dest.path) {
             dest = docs.appendingPathComponent("\(UUID().uuidString.prefix(8))-\(safe)")
         }
-        try? data.write(to: dest, options: .atomic)
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
     }
 
     // Reste-t-il des fichiers audio a importer dans la boite de depot ?

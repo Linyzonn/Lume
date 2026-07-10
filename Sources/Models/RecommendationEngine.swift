@@ -14,7 +14,12 @@ struct Recommendation: Identifiable, Equatable, Codable {
     let reason: String
     var bpm: Double? = nil       // tempo (si connu de Deezer)
 
-    static func == (l: Recommendation, r: Recommendation) -> Bool { l.id == r.id }
+    // L'egalite inclut le BPM : c'est le seul champ mutable, et SwiftUI se
+    // sert de Equatable pour savoir quoi re-rendre — sans lui, le badge de
+    // tempo pouvait ne pas apparaitre apres l'enrichissement.
+    static func == (l: Recommendation, r: Recommendation) -> Bool {
+        l.id == r.id && l.bpm == r.bpm
+    }
 }
 
 struct RecommendationSection: Identifiable, Codable {
@@ -403,6 +408,11 @@ final class Recommender: ObservableObject {
     }
 
     private func enrichWithBPM(sections: [RecommendationSection], cap: Int) async -> [RecommendationSection] {
+        // Sans profil BPM (bibliotheque introuvable sur Deezer, hors-ligne...),
+        // le tri par tempo est impossible : on s'epargne alors les ~16
+        // requetes de details, qui etaient le poste reseau le plus cher de
+        // Decouvrir pour un simple badge d'affichage.
+        guard bpmCenter != nil else { return sections }
         // Les requetes de details (une par titre, plafonnees a `cap`) sont
         // lancees EN PARALLELE : ~16 appels passent de ~4 s a ~0,5 s.
         var ids: [Int] = []
