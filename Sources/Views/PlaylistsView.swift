@@ -127,13 +127,7 @@ struct PlaylistsView: View {
                     PlaylistDetailView(playlist: pl)
                 } label: {
                     HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(LumeTheme.accent.gradient)
-                                .frame(width: 44, height: 44)
-                            Image(systemName: "music.note.list")
-                                .foregroundStyle(.white)
-                        }
+                        PlaylistArtworkView(tracks: library.tracks(in: pl), size: 44)
                         VStack(alignment: .leading) {
                             Text(pl.name).lineLimit(1)
                             Text("\(pl.trackIDs.count) titre\(pl.trackIDs.count > 1 ? "s" : "")")
@@ -148,6 +142,43 @@ struct PlaylistsView: View {
                 }
             }
         }
+    }
+}
+
+// Vignette d'une playlist : mosaique 2x2 des pochettes de ses premiers
+// morceaux (repere visuel immediat), pochette unique s'il y en a moins de 4,
+// icone generique si la playlist est vide.
+struct PlaylistArtworkView: View {
+    let tracks: [Track]
+    var size: CGFloat = 44
+
+    var body: some View {
+        Group {
+            if tracks.count >= 4 {
+                let half = size / 2
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        ArtworkView(track: tracks[0], size: half, corner: 0)
+                        ArtworkView(track: tracks[1], size: half, corner: 0)
+                    }
+                    HStack(spacing: 0) {
+                        ArtworkView(track: tracks[2], size: half, corner: 0)
+                        ArtworkView(track: tracks[3], size: half, corner: 0)
+                    }
+                }
+            } else if let first = tracks.first {
+                ArtworkView(track: first, size: size, corner: 0)
+            } else {
+                ZStack {
+                    Rectangle().fill(LumeTheme.accent.gradient)
+                    Image(systemName: "music.note.list")
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityHidden(true)
     }
 }
 
