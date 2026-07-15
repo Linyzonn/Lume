@@ -22,6 +22,10 @@ final class LibraryStore: ObservableObject {
     // Message affiche au lancement quand la bibliotheque a du etre recuperee
     // (copie de secours ou reconstruction depuis les fichiers audio).
     @Published var startupNotice: String?
+    // Derniere erreur d'ecriture sur disque (disque plein...). Avant, un
+    // save() qui echouait etait totalement silencieux : donnees perdues a
+    // la fermeture sans que l'utilisateur ne le sache.
+    @Published var persistenceError: String?
 
     // Statistiques d'ecoute, stockees SEPAREMENT de la bibliotheque
     // (fichier stats.json) pour ne jamais mettre en peril tes donnees.
@@ -253,6 +257,16 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    // Ecriture surveillee : un echec (disque plein, protection des donnees)
+    // est signale a l'utilisateur au lieu d'etre avale.
+    private func write(_ data: Data, to url: URL, what: String) {
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            persistenceError = "Impossible d'enregistrer \(what). Vérifie l'espace libre de l'iPhone — les dernières modifications risquent d'être perdues."
+        }
+    }
+
     func save() {
         let data = LibraryData(tracks: tracks, playlists: playlists)
         guard let encoded = try? JSONEncoder().encode(data) else { return }
@@ -263,7 +277,7 @@ final class LibraryStore: ObservableObject {
             try? fm.removeItem(at: libraryBackupFile)
             try? fm.copyItem(at: libraryFile, to: libraryBackupFile)
         }
-        try? encoded.write(to: libraryFile, options: .atomic)
+        write(encoded, to: libraryFile, what: "la bibliothèque")
     }
 
     // MARK: - Import de fichiers
@@ -707,7 +721,7 @@ final class LibraryStore: ObservableObject {
     private func saveStatsNow() {
         let data = StatsData(perTrack: stats, daily: dailyListening)
         if let encoded = try? JSONEncoder().encode(data) {
-            try? encoded.write(to: statsFile, options: .atomic)
+            write(encoded, to: statsFile, what: "les statistiques d'écoute")
         }
     }
 
@@ -860,7 +874,7 @@ final class LibraryStore: ObservableObject {
 
     private func saveWishlist() {
         if let encoded = try? JSONEncoder().encode(wishlist) {
-            try? encoded.write(to: wishlistFile, options: .atomic)
+            write(encoded, to: wishlistFile, what: "la liste d'envies")
         }
     }
 
@@ -1041,15 +1055,32 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    enum BackupError: LocalizedError {
+        case unreadable
+        case invalidFormat
+        var errorDescription: String? {
+            switch self {
+            case .unreadable:
+                return "Impossible de lire le fichier sélectionné."
+            case .invalidFormat:
+                return "Ce fichier n'est pas une sauvegarde Lume valide."
+            }
+        }
+    }
+
     // Restaure une sauvegarde en FUSIONNANT avec l'existant (rien n'est
     // supprime). Les morceaux sont reconnus par titre + artiste + duree
     // (ou nom de fichier identique). Retourne le nombre de morceaux relies.
+    // Un fichier illisible ou invalide leve une erreur EXPLICITE : avant, il
+    // retournait 0, indistinguable de « rien a relier ».
     @discardableResult
-    func restoreBackup(from url: URL) -> Int {
+    func restoreBackup(from url: URL) throws -> Int {
         let needsStop = url.startAccessingSecurityScopedResource()
         defer { if needsStop { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url),
-              let backup = try? JSONDecoder().decode(BackupData.self, from: data) else { return 0 }
+        guard let data = try? Data(contentsOf: url) else { throw BackupError.unreadable }
+        guard let backup = try? JSONDecoder().decode(BackupData.self, from: data) else {
+            throw BackupError.invalidFormat
+        }
 
         // Table ancienne ID -> ID locale, pour re-lier playlists et stats.
         var idMap: [UUID: UUID] = [:]

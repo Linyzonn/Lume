@@ -34,6 +34,16 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingView(isPresented: $showNowPlaying)
         }
+        // Echec d'ecriture sur disque (disque plein...) : signale ici, au
+        // niveau racine, pour etre visible quel que soit l'onglet actif.
+        .alert("Problème d'enregistrement", isPresented: Binding(
+            get: { library.persistenceError != nil },
+            set: { if !$0 { library.persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { library.persistenceError = nil }
+        } message: {
+            Text(library.persistenceError ?? "")
+        }
         .task {
             // Cablage defensif : garantit que le moteur connait la bibliotheque
             // avant la reprise de session (l'ordre onAppear/task n'est pas garanti).

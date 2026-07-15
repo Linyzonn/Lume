@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var backupURL: URL?
     @State private var showRestoreImporter = false
     @State private var restoredCount: Int?
+    @State private var restoreError: String?
+    @State private var exportFailed = false
     @AppStorage("resumeOnLaunch") private var resumeOnLaunch = false
     @AppStorage("theme.accent") private var themeID = "violet"
 
@@ -82,8 +84,27 @@ struct SettingsView: View {
                           allowedContentTypes: [.json],
                           allowsMultipleSelection: false) { result in
                 if case .success(let urls) = result, let url = urls.first {
-                    restoredCount = library.restoreBackup(from: url)
+                    do {
+                        restoredCount = try library.restoreBackup(from: url)
+                    } catch {
+                        // Fichier illisible ou invalide : message explicite
+                        // au lieu d'un trompeur « 0 morceau relié ».
+                        restoreError = error.localizedDescription
+                    }
                 }
+            }
+            .alert("Restauration impossible", isPresented: Binding(
+                get: { restoreError != nil },
+                set: { if !$0 { restoreError = nil } }
+            )) {
+                Button("OK", role: .cancel) { restoreError = nil }
+            } message: {
+                Text(restoreError ?? "")
+            }
+            .alert("Export impossible", isPresented: $exportFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("La sauvegarde n'a pas pu être créée. Vérifie l'espace libre de l'iPhone, puis réessaie.")
             }
             .safeAreaInset(edge: .bottom) {
                 if engine.currentTrack != nil { Color.clear.frame(height: 64) }
@@ -249,6 +270,7 @@ struct SettingsView: View {
         Section {
             Button {
                 backupURL = library.exportBackup()
+                if backupURL == nil { exportFailed = true }
             } label: {
                 Label("Exporter une sauvegarde", systemImage: "square.and.arrow.up")
             }
