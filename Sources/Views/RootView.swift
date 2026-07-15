@@ -55,6 +55,16 @@ struct RootView: View {
         } message: {
             Text(library.persistenceError ?? "")
         }
+        // Lecture impossible (session audio refusee, ex. appel en cours) :
+        // avant, l'app restait simplement en pause sans explication.
+        .alert("Lecture impossible", isPresented: Binding(
+            get: { engine.playbackIssue != nil },
+            set: { if !$0 { engine.playbackIssue = nil } }
+        )) {
+            Button("OK", role: .cancel) { engine.playbackIssue = nil }
+        } message: {
+            Text(engine.playbackIssue ?? "")
+        }
         .task {
             // Cablage defensif : garantit que le moteur connait la bibliotheque
             // avant la reprise de session (l'ordre onAppear/task n'est pas garanti).

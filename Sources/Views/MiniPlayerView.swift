@@ -27,6 +27,7 @@ struct MiniPlayerView: View {
                 Spacer(minLength: 4)
 
                 Button {
+                    Haptics.light()
                     engine.togglePlayPause()
                 } label: {
                     Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
@@ -37,6 +38,7 @@ struct MiniPlayerView: View {
                 .accessibilityLabel(engine.isPlaying ? "Pause" : "Lecture")
 
                 Button {
+                    Haptics.light()
                     engine.next()
                 } label: {
                     Image(systemName: "forward.fill")

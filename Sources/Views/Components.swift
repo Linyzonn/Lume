@@ -1,4 +1,13 @@
 import SwiftUI
+import UIKit
+
+// MARK: - Retours haptiques discrets sur les actions cles
+
+enum Haptics {
+    static func light() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
 
 // Ligne d'un morceau dans une liste.
 struct TrackRow: View {

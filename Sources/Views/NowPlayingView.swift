@@ -222,17 +222,17 @@ struct NowPlayingView: View {
                 .accessibilityLabel("Lecture aléatoire")
             }
 
-            Button { engine.previous() } label: { Image(systemName: "backward.fill") }
+            Button { Haptics.light(); engine.previous() } label: { Image(systemName: "backward.fill") }
                 .font(.title)
                 .accessibilityLabel("Morceau précédent")
 
-            Button { engine.togglePlayPause() } label: {
+            Button { Haptics.light(); engine.togglePlayPause() } label: {
                 Image(systemName: engine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 72))
             }
             .accessibilityLabel(engine.isPlaying ? "Pause" : "Lecture")
 
-            Button { engine.next() } label: { Image(systemName: "forward.fill") }
+            Button { Haptics.light(); engine.next() } label: { Image(systemName: "forward.fill") }
                 .font(.title)
                 .accessibilityLabel("Morceau suivant")
 

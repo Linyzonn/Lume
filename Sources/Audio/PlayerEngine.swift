@@ -31,6 +31,12 @@ final class PlayerEngine: ObservableObject {
     @Published var isPlaying = false
     @Published var queue: [Track] = []
     @Published var queueIndex = 0
+    // Message quand la lecture n'a pas pu demarrer (session audio refusee,
+    // typiquement pendant un appel) — affiche en alerte par RootView.
+    @Published var playbackIssue: String?
+
+    private static let audioUnavailableMessage =
+        "La lecture n'a pas pu démarrer : l'audio est occupé (appel en cours ?). Réessaie dans un instant."
 
     // Progression : voir PlaybackProgress ci-dessus. Le moteur continue de
     // lire/ecrire currentTime et duration comme avant ; les changements sont
@@ -624,6 +630,7 @@ final class PlayerEngine: ObservableObject {
                 // l'utilisateur relance avec le bouton lecture.
                 isPlaying = false
                 stopTicker()
+                if !startPaused { playbackIssue = Self.audioUnavailableMessage }
             }
             updateNowPlaying()
             persistSession()
@@ -725,7 +732,10 @@ final class PlayerEngine: ObservableObject {
     }
 
     func resume() {
-        guard startEngineIfNeeded() else { return }
+        guard startEngineIfNeeded() else {
+            playbackIssue = Self.audioUnavailableMessage
+            return
+        }
         players[activeIndex].play()
         if isCrossfading { players[1 - activeIndex].play() }
         isPlaying = true

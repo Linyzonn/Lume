@@ -122,6 +122,7 @@ struct FavoriteButton: View {
 
     var body: some View {
         Button {
+            Haptics.light()
             library.toggleFavorite(track)
         } label: {
             Image(systemName: isFavorite ? "heart.fill" : "heart")
