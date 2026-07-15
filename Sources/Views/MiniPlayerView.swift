@@ -18,6 +18,12 @@ struct MiniPlayerView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                // VoiceOver : le titre/artiste est l'element qui ouvre le
+                // lecteur plein ecran (les boutons restent independants).
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("En lecture : \(track.title), \(track.artist)")
+                .accessibilityHint("Ouvre le lecteur en plein écran")
+                .accessibilityAddTraits(.isButton)
                 Spacer(minLength: 4)
 
                 Button {

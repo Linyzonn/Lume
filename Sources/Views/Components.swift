@@ -35,6 +35,12 @@ struct TrackRow: View {
         .onTapGesture {
             engine.playSingle(track, in: context)
         }
+        // VoiceOver : la ligne entiere est UN element actionnable, lu
+        // naturellement (titre, artiste, duree) au lieu de 3 fragments.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(track.title), \(track.artist), \(track.duration.asTimeString)\(isCurrent ? ", en cours de lecture" : "")")
+        .accessibilityHint("Lance la lecture")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var isCurrent: Bool { engine.currentTrack?.id == track.id }
