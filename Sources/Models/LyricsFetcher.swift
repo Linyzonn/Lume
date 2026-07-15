@@ -34,24 +34,24 @@ enum LyricsFetcher {
 
     // MARK: - Appels reseau
 
+    // APIURL encode strictement & + = dans les valeurs (URLQueryItem ne le
+    // fait pas) : les paroles de « Simon & Garfunkel » se trouvent desormais.
     private static func get(title: String, artist: String, duration: Double) async throws -> LrclibEntry {
-        var comps = URLComponents(string: "https://lrclib.net/api/get")!
-        comps.queryItems = [
-            URLQueryItem(name: "track_name", value: title),
-            URLQueryItem(name: "artist_name", value: artist),
-            URLQueryItem(name: "duration", value: String(Int(duration.rounded())))
-        ]
-        let data = try await requestData(url: comps.url!)
+        guard let url = APIURL.build("https://lrclib.net/api/get", [
+            ("track_name", title),
+            ("artist_name", artist),
+            ("duration", String(Int(duration.rounded())))
+        ]) else { throw FetchError.network }
+        let data = try await requestData(url: url)
         return try JSONDecoder().decode(LrclibEntry.self, from: data)
     }
 
     private static func search(title: String, artist: String) async throws -> [LrclibEntry] {
-        var comps = URLComponents(string: "https://lrclib.net/api/search")!
-        comps.queryItems = [
-            URLQueryItem(name: "track_name", value: title),
-            URLQueryItem(name: "artist_name", value: artist)
-        ]
-        let data = try await requestData(url: comps.url!)
+        guard let url = APIURL.build("https://lrclib.net/api/search", [
+            ("track_name", title),
+            ("artist_name", artist)
+        ]) else { throw FetchError.network }
+        let data = try await requestData(url: url)
         return (try? JSONDecoder().decode([LrclibEntry].self, from: data)) ?? []
     }
 

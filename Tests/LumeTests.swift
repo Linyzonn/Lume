@@ -121,6 +121,28 @@ final class LumeTests: XCTestCase {
         XCTAssertNil(LRCParser.parse("Des paroles\nsans aucun\nhorodatage\nsur quatre lignes"))
     }
 
+    // MARK: - Construction d'URL (encodage strict des valeurs)
+
+    func testAPIURLEncodesAmpersandInValues() throws {
+        let url = try XCTUnwrap(APIURL.build("https://example.com/search",
+                                             [("q", "Simon & Garfunkel"), ("limit", "1")]))
+        XCTAssertEqual(url.absoluteString,
+                       "https://example.com/search?q=Simon%20%26%20Garfunkel&limit=1")
+    }
+
+    func testAPIURLEncodesPlusAndEquals() throws {
+        let url = try XCTUnwrap(APIURL.build("https://example.com",
+                                             [("q", "Dan + Shay = duo")]))
+        XCTAssertEqual(url.absoluteString,
+                       "https://example.com?q=Dan%20%2B%20Shay%20%3D%20duo")
+    }
+
+    func testAPIURLKeepsSimpleValuesReadable() throws {
+        let url = try XCTUnwrap(APIURL.build("https://example.com",
+                                             [("media", "music"), ("limit", "3")]))
+        XCTAssertEqual(url.absoluteString, "https://example.com?media=music&limit=3")
+    }
+
     // MARK: - Decodage tolerant (protection contre la perte de bibliotheque)
 
     func testTrackDecodingToleratesMissingFields() throws {

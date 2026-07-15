@@ -1,5 +1,33 @@
 import Foundation
 
+// MARK: - Construction d'URL sure
+//
+// PIEGE CONNU : URLComponents / .urlQueryAllowed n'encodent PAS les
+// caracteres & + = a l'interieur des VALEURS de parametres (ils sont legaux
+// dans une query au sens RFC 3986, donc laisses tels quels). Resultat :
+// « Simon & Garfunkel » tronquait le parametre — paroles, pochettes et
+// recommandations echouaient pour tout artiste/titre contenant & ou +.
+// Ce constructeur encode strictement chaque valeur.
+enum APIURL {
+    private static let valueAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&+=?/")
+        return set
+    }()
+
+    static func encodeValue(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: valueAllowed) ?? value
+    }
+
+    static func build(_ base: String, _ params: [(String, String)]) -> URL? {
+        guard !params.isEmpty else { return URL(string: base) }
+        let query = params
+            .map { "\($0.0)=\(encodeValue($0.1))" }
+            .joined(separator: "&")
+        return URL(string: "\(base)?\(query)")
+    }
+}
+
 // MARK: - Pochettes via l'API de recherche iTunes (gratuite, sans cle)
 
 enum ITunesArtwork {
@@ -8,14 +36,12 @@ enum ITunesArtwork {
 
     // Cherche la pochette d'un morceau et retourne les donnees de l'image (JPEG).
     static func fetchArtworkData(title: String, artist: String) async -> Data? {
-        var comps = URLComponents(string: "https://itunes.apple.com/search")!
-        comps.queryItems = [
-            URLQueryItem(name: "term", value: "\(artist) \(title)"),
-            URLQueryItem(name: "media", value: "music"),
-            URLQueryItem(name: "entity", value: "song"),
-            URLQueryItem(name: "limit", value: "3")
-        ]
-        guard let url = comps.url,
+        guard let url = APIURL.build("https://itunes.apple.com/search", [
+                  ("term", "\(artist) \(title)"),
+                  ("media", "music"),
+                  ("entity", "song"),
+                  ("limit", "3")
+              ]),
               let data = await APICache.fetch(url: url, maxAge: 7 * 24 * 3600),
               let response = try? JSONDecoder().decode(SearchResponse.self, from: data) else { return nil }
         for item in response.results {
@@ -86,7 +112,7 @@ enum DeezerAPI {
     }
 
     static func searchArtist(_ name: String) async -> Artist? {
-        let q = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        let q = APIURL.encodeValue(name)
         let r: ListResponse<Artist>? = await get("https://api.deezer.com/search/artist?q=\(q)&limit=1",
                                                  as: ListResponse<Artist>.self)
         return r?.data.first
@@ -116,8 +142,7 @@ enum DeezerAPI {
 
     // Recherche d'un titre precis (pour retrouver le BPM des morceaux de ta bibliotheque).
     static func searchTrack(title: String, artist: String) async -> TrackItem? {
-        let raw = "artist:\"\(artist)\" track:\"\(title)\""
-        let q = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? raw
+        let q = APIURL.encodeValue("artist:\"\(artist)\" track:\"\(title)\"")
         let r: ListResponse<TrackItem>? = await get("https://api.deezer.com/search?q=\(q)&limit=1",
                                                     as: ListResponse<TrackItem>.self)
         return r?.data.first

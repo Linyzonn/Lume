@@ -250,9 +250,8 @@ private struct RecommendationCard: View {
     }
 
     private var youtubeSearchURL: URL? {
-        let q = "\(item.artistName) \(item.title)"
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        return URL(string: "https://www.youtube.com/results?search_query=\(q)")
+        APIURL.build("https://www.youtube.com/results",
+                     [("search_query", "\(item.artistName) \(item.title)")])
     }
 }
 
@@ -339,8 +338,7 @@ struct WishlistSheet: View {
     }
 
     private func youtubeURL(for wish: WishItem) -> URL? {
-        let q = "\(wish.artist) \(wish.title)"
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        return URL(string: "https://www.youtube.com/results?search_query=\(q)")
+        APIURL.build("https://www.youtube.com/results",
+                     [("search_query", "\(wish.artist) \(wish.title)")])
     }
 }
