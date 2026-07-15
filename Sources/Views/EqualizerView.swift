@@ -23,6 +23,7 @@ struct EqualizerView: View {
                     modeSection
                     speedSection
                     boostSection
+                    normalizeSection
                     bassSection
                     ambianceSection
                     eqSection
@@ -149,6 +150,19 @@ struct EqualizerView: View {
             }
             .padding(.horizontal)
             Text("Amplifie le son au-delà du volume maximal de l'iPhone. À forte valeur, un peu de saturation est possible.")
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+        }
+    }
+
+    // MARK: - Volume homogene
+
+    private var normalizeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $engine.normalizeVolume) {
+                sectionTitle("Volume homogène", systemImage: "waveform.path.ecg")
+            }
+            .padding(.horizontal)
+            Text("Atténue les morceaux plus forts que les autres pour un niveau d'écoute constant. Qualité intacte : aucune compression, le niveau est ajusté une seule fois avant chaque morceau, jamais en cours de lecture. Prend effet à partir du morceau suivant (la bibliothèque s'analyse en arrière-plan à l'activation).")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
         }
     }

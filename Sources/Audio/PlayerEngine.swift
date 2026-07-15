@@ -88,6 +88,22 @@ final class PlayerEngine: ObservableObject {
     // Vitesse de lecture (0.75x a 2x) — pratique pour les podcasts / voix.
     @Published var playbackRate: Float = 1.0 { didSet { applyRate(); saveAudioSettings() } }
 
+    // Volume homogene : les morceaux plus forts que la reference sont
+    // attenues (jamais amplifies) d'un gain FIXE par morceau — voir
+    // LoudnessStore pour les garanties de qualite. Prend effet au prochain
+    // morceau charge (jamais de changement de niveau en cours de lecture).
+    @Published var normalizeVolume = false {
+        didSet {
+            saveAudioSettings()
+            if normalizeVolume, oldValue != normalizeVolume {
+                measureLibraryLoudness()
+            } else if !normalizeVolume {
+                // Desactivation : retour immediat au volume plein.
+                playerMixers.forEach { $0.outputVolume = 1 }
+            }
+        }
+    }
+
     enum RepeatMode: String { case off, all, one }
 
     // Reverberation : options simples -> presets systeme.
@@ -410,6 +426,7 @@ final class PlayerEngine: ObservableObject {
         d.set(Double(playbackRate), forKey: "audio.rate")
         d.set(shuffleEnabled, forKey: "audio.shuffle")
         d.set(repeatMode.rawValue, forKey: "audio.repeat")
+        d.set(normalizeVolume, forKey: "audio.normalize")
     }
 
     private func restoreAudioSettings() {
@@ -440,6 +457,7 @@ final class PlayerEngine: ObservableObject {
         if let raw = d.string(forKey: "audio.repeat"), let mode = RepeatMode(rawValue: raw) {
             repeatMode = mode
         }
+        normalizeVolume = d.bool(forKey: "audio.normalize")
         restoringSettings = false
     }
 
@@ -596,6 +614,7 @@ final class PlayerEngine: ObservableObject {
 
         players[i].stop()
         players[i].volume = 1.0
+        applyNormalizationGain(player: i, track: track, fileURL: url)
         files[i] = file
         startFrames[i] = safeStart
 
@@ -638,6 +657,34 @@ final class PlayerEngine: ObservableObject {
         return true
     }
 
+    // MARK: - Volume homogene (gain fixe par morceau, voir LoudnessStore)
+
+    // Applique le gain de normalisation au mixeur du lecteur AVANT la
+    // lecture. Morceau jamais mesure : la mesure part en arriere-plan et le
+    // gain s'appliquera aux prochaines lectures — jamais en cours de morceau.
+    private func applyNormalizationGain(player i: Int, track: Track, fileURL: URL) {
+        guard normalizeVolume else {
+            playerMixers[i].outputVolume = 1
+            return
+        }
+        if let gain = LoudnessStore.shared.gain(forFileName: track.fileName) {
+            playerMixers[i].outputVolume = gain
+        } else {
+            playerMixers[i].outputVolume = 1
+            LoudnessStore.shared.measureIfNeeded(url: fileURL, fileName: track.fileName)
+        }
+    }
+
+    // A l'activation du volume homogene : mesure en arriere-plan (file
+    // serielle, priorite basse) tous les morceaux jamais analyses, pour que
+    // les prochaines lectures soient deja normalisees.
+    private func measureLibraryLoudness() {
+        guard let lib = library else { return }
+        for track in lib.tracks where !LoudnessStore.shared.hasMeasurement(forFileName: track.fileName) {
+            LoudnessStore.shared.measureIfNeeded(url: lib.url(for: track), fileName: track.fileName)
+        }
+    }
+
     private func computedDuration(for i: Int, fallback: Double) -> Double {
         guard let file = files[i] else { return fallback }
         let sr = file.processingFormat.sampleRate
@@ -663,6 +710,25 @@ final class PlayerEngine: ObservableObject {
         startFrames[j] = 0
         generations[j] += 1
         let gen = generations[j]
+
+        // Volume homogene : le gain est pose sur le lecteur precharge.
+        // Morceau jamais mesure : l'analyse (~0,3 s en arriere-plan) aboutit
+        // bien avant la bascule gapless (~15 s) — le gain est alors applique
+        // au lecteur precharge, qui n'a pas encore commence a jouer.
+        applyNormalizationGain(player: j, track: track, fileURL: lib.url(for: track))
+        if normalizeVolume, !LoudnessStore.shared.hasMeasurement(forFileName: track.fileName) {
+            let fileName = track.fileName
+            LoudnessStore.shared.measureIfNeeded(url: lib.url(for: track), fileName: fileName) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.preloadedPlayer == j,
+                          self.generations[j] == gen,
+                          self.normalizeVolume,
+                          let gain = LoudnessStore.shared.gain(forFileName: fileName) else { return }
+                    self.playerMixers[j].outputVolume = gain
+                }
+            }
+        }
         players[j].scheduleSegment(file,
                                    startingFrame: 0,
                                    frameCount: AVAudioFrameCount(file.length),

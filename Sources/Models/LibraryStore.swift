@@ -1002,6 +1002,8 @@ final class LibraryStore: ObservableObject {
         if stats.removeValue(forKey: track.id) != nil {
             scheduleStatsSave()
         }
+        // Idem pour sa mesure de volume homogene.
+        LoudnessStore.shared.forget(fileName: track.fileName)
         save()
     }
 
