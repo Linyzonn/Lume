@@ -965,7 +965,13 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Suppression
 
+    // Previent le moteur de lecture AVANT la suppression du fichier
+    // (branche dans RootView) : le morceau sort de la file et la lecture
+    // passe au suivant s'il etait en cours.
+    var onTrackDeleted: ((UUID) -> Void)?
+
     func delete(_ track: Track) {
+        onTrackDeleted?(track.id)
         try? FileManager.default.removeItem(at: url(for: track))
         if let art = track.artworkFileName {
             try? FileManager.default.removeItem(at: artworkDir.appendingPathComponent(art))
@@ -973,6 +979,11 @@ final class LibraryStore: ObservableObject {
         tracks.removeAll { $0.id == track.id }
         for i in playlists.indices {
             playlists[i].trackIDs.removeAll { $0 == track.id }
+        }
+        // Les stats de ce morceau ne servent plus a rien (un futur re-import
+        // recevrait un nouvel identifiant) : on ne les laisse pas s'accumuler.
+        if stats.removeValue(forKey: track.id) != nil {
+            scheduleStatsSave()
         }
         save()
     }

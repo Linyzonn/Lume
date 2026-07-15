@@ -801,6 +801,49 @@ final class PlayerEngine: ObservableObject {
         load(track: t, intoPlayer: activeIndex, startFrame: 0, autoPlay: true)
     }
 
+    // MARK: - Suppression d'un morceau de la bibliotheque
+
+    // Appele par la bibliotheque quand un morceau est supprime : il est
+    // retire de la file (et de la file d'origine du shuffle). Si c'etait le
+    // morceau en cours, la lecture passe au suivant — avant, le fichier
+    // supprime continuait de jouer et restait dans la file.
+    func handleTrackDeleted(_ id: UUID) {
+        orderedQueue.removeAll { $0.id == id }
+        guard queue.contains(where: { $0.id == id }) else { return }
+        invalidatePreload()
+        let wasCurrent = currentTrack?.id == id
+        let wasPlaying = isPlaying
+        if wasCurrent { cancelCrossfade() }
+
+        // Retire toutes les occurrences et recale l'index.
+        let removedBefore = queue.prefix(queueIndex).filter { $0.id == id }.count
+        queue.removeAll { $0.id == id }
+        queueIndex = min(max(0, queueIndex - removedBefore), max(0, queue.count - 1))
+
+        if wasCurrent {
+            if queue.isEmpty {
+                clearPlayback()
+            } else {
+                load(track: queue[queueIndex], intoPlayer: activeIndex, startFrame: 0,
+                     autoPlay: true, startPaused: !wasPlaying)
+            }
+        } else {
+            persistSession()
+        }
+    }
+
+    // Arret complet : plus de morceau courant (le mini-lecteur disparait).
+    private func clearPlayback() {
+        stopPlayback()
+        currentTrack = nil
+        queue = []
+        orderedQueue = []
+        queueIndex = 0
+        duration = 0
+        persistSession()
+        updateNowPlaying()
+    }
+
     private func stopPlayback() {
         invalidatePreload()
         players.forEach { $0.stop() }

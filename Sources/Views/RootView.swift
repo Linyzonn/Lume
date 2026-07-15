@@ -58,6 +58,11 @@ struct RootView: View {
             engine.onListenFlush = { [weak library] track, seconds in
                 library?.recordListening(track.id, seconds: seconds)
             }
+            // Suppression d'un morceau : le moteur le retire de la file
+            // (et passe au suivant s'il etait en lecture).
+            library.onTrackDeleted = { [weak engine] id in
+                engine?.handleTrackDeleted(id)
+            }
             // Reprise de la derniere session (option des Reglages), en pause.
             if resumeOnLaunch {
                 engine.restoreSavedSessionIfNeeded()
