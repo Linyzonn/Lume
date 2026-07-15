@@ -222,7 +222,7 @@ struct LibraryView: View {
             ForEach(library.artists.keys.sorted(), id: \.self) { artist in
                 let artistTracks = library.artists[artist] ?? []
                 NavigationLink {
-                    CollectionDetailView(title: artist, tracks: artistTracks)
+                    ArtistDetailView(name: artist, tracks: artistTracks)
                 } label: {
                     HStack(spacing: 12) {
                         ArtistAvatarView(name: artist, size: 44)
@@ -318,6 +318,81 @@ struct LibraryView: View {
 
     private var audioTypes: [UTType] {
         [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
+    }
+}
+
+// Dossier d'un artiste : en-tete (photo, lecture) + morceaux REGROUPES PAR
+// ALBUM quand il y en a plusieurs (navigation plus musicale dans les grosses
+// discographies) ; liste simple sinon.
+struct ArtistDetailView: View {
+    let name: String
+    let tracks: [Track]
+    @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var engine: PlayerEngine
+
+    private var albums: [(name: String, tracks: [Track])] {
+        Dictionary(grouping: tracks) { $0.album }
+            .map { (name: $0.key,
+                    tracks: $0.value.sorted {
+                        $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    }) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 14) {
+                    ArtistAvatarView(name: name, size: 64)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(name).font(.title3.weight(.bold))
+                        Text("\(tracks.count) titre\(tracks.count > 1 ? "s" : "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        engine.play(tracks: tracks, startAt: 0)
+                    } label: {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundStyle(LumeTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Tout lire")
+                    .disabled(tracks.isEmpty)
+                }
+                .padding(.vertical, 4)
+                Button {
+                    engine.shuffleEnabled = true
+                    engine.play(tracks: tracks, startAt: Int.random(in: 0..<max(1, tracks.count)))
+                } label: {
+                    Label("Lecture aléatoire", systemImage: "shuffle")
+                }
+            }
+            if albums.count > 1 {
+                ForEach(albums, id: \.name) { album in
+                    Section(album.name) {
+                        ForEach(album.tracks) { track in
+                            // Contexte = l'album : toucher un titre enchaine
+                            // sur la suite de CET album.
+                            TrackRow(track: track, context: album.tracks)
+                        }
+                    }
+                }
+            } else {
+                Section {
+                    ForEach(tracks) { track in
+                        TrackRow(track: track, context: tracks)
+                    }
+                }
+            }
+        }
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await library.fetchArtistImage(for: name) }
+        .safeAreaInset(edge: .bottom) {
+            if engine.currentTrack != nil { Color.clear.frame(height: 64) }
+        }
     }
 }
 
