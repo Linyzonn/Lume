@@ -512,6 +512,9 @@ final class PreviewPlayer: ObservableObject {
         // On met la musique principale en pause pour laisser place a l'extrait.
         if mainEngine.isPlaying { mainEngine.pause() }
         stop()
+        // La session audio n'est plus activee au lancement de l'app : on
+        // s'assure qu'elle l'est avant de jouer l'extrait.
+        try? AVAudioSession.sharedInstance().setActive(true)
         let item = AVPlayerItem(url: url)
         player = AVPlayer(playerItem: item)
         player?.play()

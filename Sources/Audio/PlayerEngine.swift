@@ -439,18 +439,22 @@ final class PlayerEngine: ObservableObject {
     private func configureSession() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default)
-        try? session.setActive(true)
+        // NOTE : la session n'est PAS activee ici. L'activer au lancement
+        // coupait la musique des autres apps (Spotify, podcast...) des
+        // l'ouverture de Lume, meme sans rien lire. Elle est activee a la
+        // demande dans startEngineIfNeeded(), juste avant de jouer.
     }
 
-    // Demarre le moteur si necessaire. Retourne false si l'audio est
-    // indisponible (ex. appel telephonique en cours, session refusee par
-    // iOS) : dans ce cas, les appelants ne doivent PAS appeler play() —
-    // AVAudioPlayerNode.play() sur un moteur arrete leve une exception
-    // Objective-C non rattrapable, donc un CRASH de l'app.
+    // Demarre la session audio et le moteur si necessaire. Retourne false
+    // si l'audio est indisponible (ex. appel telephonique en cours, session
+    // refusee par iOS) : dans ce cas, les appelants ne doivent PAS appeler
+    // play() — AVAudioPlayerNode.play() sur un moteur arrete leve une
+    // exception Objective-C non rattrapable, donc un CRASH de l'app.
     @discardableResult
     private func startEngineIfNeeded() -> Bool {
         if engine.isRunning { return true }
         do {
+            try AVAudioSession.sharedInstance().setActive(true)
             try engine.start()
             return true
         } catch {
@@ -552,7 +556,11 @@ final class PlayerEngine: ObservableObject {
     }
 
     // Charge un morceau dans l'un des deux lecteurs et (optionnellement) demarre.
-    private func load(track: Track, intoPlayer i: Int, startFrame: AVAudioFramePosition, autoPlay: Bool) {
+    // `startPaused` : prepare tout (etat, planification) SANS demarrer le
+    // moteur ni la session audio — utilise par la reprise de session au
+    // lancement et par le seek en pause (aucune activation audio, aucun blip).
+    private func load(track: Track, intoPlayer i: Int, startFrame: AVAudioFramePosition,
+                      autoPlay: Bool, startPaused: Bool = false) {
         guard let lib = library else { return }
         let url = lib.url(for: track)
         guard let file = try? AVAudioFile(forReading: url) else {
@@ -583,7 +591,9 @@ final class PlayerEngine: ObservableObject {
             Task { @MainActor in self?.handlePlaybackFinished(player: i, generation: gen) }
         }
 
-        let engineReady = startEngineIfNeeded()
+        // En mode "prepare en pause", on ne touche ni a la session ni au
+        // moteur : ils demarreront au premier resume().
+        let engineReady = startPaused ? false : startEngineIfNeeded()
 
         if autoPlay {
             activeIndex = i
@@ -591,13 +601,14 @@ final class PlayerEngine: ObservableObject {
             duration = computedDuration(for: i, fallback: track.duration)
             currentTime = Double(startFrame) / max(1, file.processingFormat.sampleRate)
             lastTickDate = nil
-            if engineReady {
+            if !startPaused, engineReady {
                 players[i].play()
                 isPlaying = true
                 startTicker()
             } else {
-                // Audio indisponible (appel en cours...) : tout est pret et
-                // en pause — l'utilisateur relance avec le bouton lecture.
+                // Prepare en pause (reprise de session, seek en pause) ou
+                // audio indisponible (appel en cours...) : tout est pret,
+                // l'utilisateur relance avec le bouton lecture.
                 isPlaying = false
                 stopTicker()
             }
@@ -785,6 +796,9 @@ final class PlayerEngine: ObservableObject {
         updateNowPlaying()
         stopTicker()
         engine.pause()
+        // Fin de lecture : on libere la session audio pour que la musique
+        // d'une autre app puisse reprendre (courtoisie standard iOS).
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     // Volume de sortie global (utilise par le fondu du minuteur de sommeil).
@@ -827,8 +841,10 @@ final class PlayerEngine: ObservableObject {
         guard let file = try? AVAudioFile(forReading: lib.url(for: track)) else { return }
         let sr = file.processingFormat.sampleRate
         let frame = AVAudioFramePosition(max(0, min(time, max(0, track.duration - 2))) * sr)
-        load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true)
-        pause()
+        // startPaused : tout est prepare mais la session audio n'est PAS
+        // activee — la reprise au lancement ne coupe plus la musique d'une
+        // autre app, et aucun son ne demarre brievement.
+        load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true, startPaused: true)
         currentTime = Double(frame) / max(1, sr)
     }
 
