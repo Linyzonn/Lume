@@ -300,7 +300,7 @@ struct SettingsView: View {
         } header: {
             Text("Sauvegarde")
         } footer: {
-            Text("La sauvegarde (fichier JSON) contient playlists, favoris, paroles, statistiques et liste d'envies — pas les fichiers audio. Après une réinstallation, réimporte ta musique puis restaure : tout est relié automatiquement.")
+            Text("La sauvegarde (fichier JSON) contient playlists, favoris, paroles, statistiques et liste d'envies — pas les fichiers audio. Après une réinstallation, réimporte ta musique puis restaure : tout est relié automatiquement. Un filet de sécurité automatique « Lume-sauvegarde-auto.json » est aussi déposé chaque jour dans le dossier Documents de Lume (visible dans l'app Fichiers).")
         }
     }
 

@@ -90,6 +90,9 @@ struct RootView: View {
             }
             // Import automatique des fichiers deposes via iTunes/Finder.
             await library.scanInbox()
+            // Filet de securite : sauvegarde automatique quotidienne
+            // (playlists, favoris, stats...) deposee dans Documents.
+            library.autoBackupIfNeeded()
         }
         .onChange(of: scenePhase) { phase in
             if phase == .active {
@@ -99,6 +102,7 @@ struct RootView: View {
                 // Les stats sont sauvegardees en differe (5 s) : au passage
                 // en arriere-plan, on force l'ecriture pour ne rien perdre.
                 library.flushStatsNow()
+                library.autoBackupIfNeeded()
             }
         }
     }

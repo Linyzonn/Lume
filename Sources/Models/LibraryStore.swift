@@ -1091,6 +1091,30 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    // Sauvegarde AUTOMATIQUE : une copie du fichier de sauvegarde est
+    // deposee dans Documents (visible dans Fichiers et iTunes/Finder) au
+    // plus une fois par jour, en remplacant la precedente. Filet de securite
+    // du sideload (limite des 7 jours) : meme sans y penser, une sauvegarde
+    // recente existe toujours hors de l'app.
+    func autoBackupIfNeeded() {
+        guard !tracks.isEmpty || !playlists.isEmpty else { return }
+        let d = UserDefaults.standard
+        if let last = d.object(forKey: "backup.lastAuto") as? Date,
+           Date().timeIntervalSince(last) < 24 * 3600 { return }
+        let backup = BackupData(tracks: tracks, playlists: playlists,
+                                stats: stats, daily: dailyListening,
+                                wishlist: wishlist)
+        guard let data = try? JSONEncoder().encode(backup) else { return }
+        let url = docs.appendingPathComponent("Lume-sauvegarde-auto.json")
+        do {
+            try data.write(to: url, options: .atomic)
+            d.set(Date(), forKey: "backup.lastAuto")
+        } catch {
+            // Pas bloquant (nouvelle tentative au prochain passage) : on ne
+            // derange pas l'utilisateur pour un filet de securite.
+        }
+    }
+
     enum BackupError: LocalizedError {
         case unreadable
         case invalidFormat
