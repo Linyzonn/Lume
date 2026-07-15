@@ -502,6 +502,9 @@ final class PreviewPlayer: ObservableObject {
 
     private var player: AVPlayer?
     private var endObserver: NSObjectProtocol?
+    // Moteur principal mis en pause PAR l'extrait : a la fin (naturelle ou
+    // manuelle) de l'ecoute, la musique reprend la ou elle s'etait arretee.
+    private weak var pausedEngine: PlayerEngine?
 
     func toggle(_ rec: Recommendation, mainEngine: PlayerEngine) {
         if playingID == rec.id {
@@ -510,8 +513,13 @@ final class PreviewPlayer: ObservableObject {
         }
         guard let s = rec.previewURL, let url = URL(string: s) else { return }
         // On met la musique principale en pause pour laisser place a l'extrait.
-        if mainEngine.isPlaying { mainEngine.pause() }
-        stop()
+        if mainEngine.isPlaying {
+            mainEngine.pause()
+            pausedEngine = mainEngine
+        }
+        // Enchainement d'extraits : on coupe l'extrait courant SANS relancer
+        // la musique principale entre les deux.
+        stopPreviewOnly()
         // La session audio n'est plus activee au lancement de l'app : on
         // s'assure qu'elle l'est avant de jouer l'extrait.
         try? AVAudioSession.sharedInstance().setActive(true)
@@ -527,6 +535,17 @@ final class PreviewPlayer: ObservableObject {
     }
 
     func stop() {
+        stopPreviewOnly()
+        // Reprise de la musique principale UNIQUEMENT si c'est nous qui
+        // l'avions mise en pause (et que l'utilisateur n'a rien relance
+        // entre-temps).
+        if let engine = pausedEngine, !engine.isPlaying, engine.currentTrack != nil {
+            engine.resume()
+        }
+        pausedEngine = nil
+    }
+
+    private func stopPreviewOnly() {
         player?.pause()
         player = nil
         playingID = nil
