@@ -705,6 +705,12 @@ final class LibraryStore: ObservableObject {
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
+        // Locale POSIX + calendrier gregorien FIGES : sans cela, les cles
+        // suivaient la langue / le calendrier du telephone (chiffres arabes,
+        // calendrier bouddhiste => annee 2569...) et l'historique d'ecoute
+        // se fragmentait au moindre changement de reglage systeme.
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()
@@ -1143,14 +1149,28 @@ final class LibraryStore: ObservableObject {
     // Regroupement insensible a la casse ("rihanna" et "Rihanna" fusionnent).
     var artists: [String: [Track]] {
         if let artistsCache { return artistsCache }
+        // Passe 1 : choisir le nom affiche de chaque artiste. La variante la
+        // mieux ecrite gagne : "Rihanna" remplace "rihanna" (avant, le premier
+        // nom rencontre gagnait, meme tout en minuscules).
         var canonical: [String: String] = [:]   // cle normalisee -> nom affiche
+        for track in tracks {
+            for name in track.artistList {
+                let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                if let existing = canonical[key] {
+                    if existing == existing.lowercased(), name != name.lowercased() {
+                        canonical[key] = name
+                    }
+                } else {
+                    canonical[key] = name
+                }
+            }
+        }
+        // Passe 2 : regrouper les morceaux sous le nom retenu.
         var dict: [String: [Track]] = [:]
         for track in tracks {
             for name in track.artistList {
                 let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-                let display = canonical[key] ?? name
-                canonical[key] = display
-                dict[display, default: []].append(track)
+                dict[canonical[key] ?? name, default: []].append(track)
             }
         }
         artistsCache = dict

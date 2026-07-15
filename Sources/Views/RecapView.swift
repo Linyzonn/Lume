@@ -8,7 +8,19 @@ import SwiftUI
 struct RecapView: View {
     @EnvironmentObject var library: LibraryStore
 
-    private var year: Int { Calendar.current.component(.year, from: Date()) }
+    // Annee GREGORIENNE : les cles de stats sont ecrites en calendrier
+    // gregorien fige (voir LibraryStore.dayFormatter), le filtre par annee
+    // doit utiliser le meme calendrier quel que soit le reglage du telephone.
+    private var year: Int { Calendar(identifier: .gregorian).component(.year, from: Date()) }
+
+    // Parseur des cles "yyyy-MM-dd", symetrique du formateur d'ecriture.
+    private static let dayParser: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     var body: some View {
         TabView {
@@ -64,8 +76,10 @@ struct RecapView: View {
         for track in library.tracks {
             guard let s = library.stats[track.id] else { continue }
             for artist in track.artistList {
-                let key = artist.lowercased()
-                names[key] = artist
+                // Normalisation avec accents, comme partout ailleurs
+                // ("Stromaé" et "Stromae" ne comptent plus double).
+                let key = LibraryStore.normalized(artist)
+                if names[key] == nil { names[key] = artist }
                 seconds[key, default: 0] += s.seconds
                 plays[key, default: 0] += s.plays
             }
@@ -83,10 +97,8 @@ struct RecapView: View {
         guard let best = library.dailyListening
             .filter({ $0.key.hasPrefix(prefix) })
             .max(by: { $0.value < $1.value }), best.value >= 60 else { return nil }
-        let parser = DateFormatter()
-        parser.dateFormat = "yyyy-MM-dd"
         var label = best.key
-        if let date = parser.date(from: best.key) {
+        if let date = Self.dayParser.date(from: best.key) {
             let out = DateFormatter()
             out.locale = Locale(identifier: "fr_FR")
             out.dateFormat = "d MMMM"
@@ -97,11 +109,9 @@ struct RecapView: View {
 
     // Plus longue serie de jours consecutifs (>= 1 min) de l'annee.
     private var longestStreak: Int {
-        let parser = DateFormatter()
-        parser.dateFormat = "yyyy-MM-dd"
         let days = library.dailyListening
             .filter { $0.value >= 60 }
-            .keys.compactMap { parser.date(from: $0) }
+            .keys.compactMap { Self.dayParser.date(from: $0) }
             .sorted()
         guard !days.isEmpty else { return 0 }
         var best = 1, current = 1
@@ -151,7 +161,9 @@ struct RecapView: View {
     private var topTracksCard: some View {
         card(colors: [Color(red: 0.92, green: 0.36, blue: 0.62), Color(red: 0.4, green: 0.08, blue: 0.28)]) {
             Text("🏆").font(.system(size: 56))
-            Text("Tes titres de l'année")
+            // Les ecoutes par morceau ne sont pas datees : ce podium couvre
+            // TOUTES tes ecoutes — le titre ne pretend plus « de l'annee ».
+            Text("Tes titres les plus écoutés")
                 .font(.title2.weight(.bold))
                 .foregroundStyle(.white)
             if topTracks.isEmpty {
@@ -185,7 +197,7 @@ struct RecapView: View {
     private var topArtistsCard: some View {
         card(colors: [Color(red: 0.15, green: 0.5, blue: 0.95), Color(red: 0.05, green: 0.15, blue: 0.4)]) {
             Text("🎤").font(.system(size: 56))
-            Text("Tes artistes de l'année")
+            Text("Tes artistes les plus écoutés")
                 .font(.title2.weight(.bold))
                 .foregroundStyle(.white)
             if topArtists.isEmpty {
