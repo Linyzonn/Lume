@@ -1092,6 +1092,26 @@ final class PlayerEngine: ObservableObject {
             object: nil, queue: .main) { [weak self] note in
             Task { @MainActor in self?.handleRouteChange(note) }
         }
+        // Changement de CONFIGURATION audio (connexion d'AirPods / d'une
+        // enceinte, changement de frequence materielle...) : AVAudioEngine
+        // S'ARRETE de lui-meme dans ce cas et perd les planifications en
+        // cours. Sans ce correctif, l'app croyait continuer a jouer (le
+        // temps avancait) alors que le son etait coupe.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.handleEngineConfigurationChange() }
+        }
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard currentTrack != nil, files[activeIndex] != nil else { return }
+        // Les planifications des lecteurs appartiennent a l'ancien graphe :
+        // on invalide le pre-chargement gapless (il sera refait au prochain
+        // tic) puis on recharge le morceau courant a la position exacte ou
+        // il en etait — la lecture reprend sur la nouvelle sortie.
+        invalidatePreload()
+        seek(to: currentTime)
     }
 
     private func handleInterruption(_ note: Notification) {
