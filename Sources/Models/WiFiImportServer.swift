@@ -51,6 +51,8 @@ final class WiFiImportServer: ObservableObject {
             let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!)
             let code = String(format: "%04d", Int.random(in: 0...9999))
             pairingCode = code
+            // Nouveau code = compteur de tentatives remis a zero.
+            HTTPConnection.resetPairingLockout()
             l.newConnectionHandler = { [weak self] conn in
                 let http = HTTPConnection(connection: conn, expectedCode: code) { name, tempURL in
                     Task { @MainActor in self?.handleFile(name: name, tempURL: tempURL) }
@@ -166,6 +168,18 @@ final class HTTPConnection {
     private static let maxBodySize = 300 * 1024 * 1024
     private static let queue = DispatchQueue(label: "lume.wifi.http")
 
+    // MARK: Anti force brute
+    // Un code a 4 chiffres ne resiste pas a 10 000 essais automatises :
+    // apres `maxFailedAttempts` codes faux, TOUT envoi est refuse jusqu'a
+    // la prochaine activation du serveur (qui regenere aussi le code).
+    // Etat accede uniquement sur Self.queue (serielle) -> pas de course.
+    private static var failedCodeAttempts = 0
+    private static let maxFailedAttempts = 5
+
+    static func resetPairingLockout() {
+        queue.async { failedCodeAttempts = 0 }
+    }
+
     init(connection: NWConnection,
          expectedCode: String,
          onFileReceived: @escaping (String, URL) -> Void,
@@ -251,9 +265,27 @@ final class HTTPConnection {
             providedCode = comps.queryItems?.first(where: { $0.name == "code" })?.value ?? ""
         }
 
+        // SECURITE : verrouillage apres trop de codes faux (anti force brute).
+        guard Self.failedCodeAttempts < Self.maxFailedAttempts else {
+            respond(status: "429 Too Many Requests",
+                    body: Data("Trop de tentatives. Désactive puis réactive l'Import Wi-Fi sur l'iPhone.".utf8))
+            return
+        }
         // SECURITE : sans le bon code (affiche dans l'app), pas d'envoi.
         guard providedCode == expectedCode else {
+            Self.failedCodeAttempts += 1
             respond(status: "403 Forbidden", body: Data("Code incorrect".utf8))
+            return
+        }
+        Self.failedCodeAttempts = 0
+
+        // SECURITE : seuls les fichiers AUDIO sont acceptes. Avant, n'importe
+        // quel fichier envoye atterrissait dans Documents et y restait
+        // indefiniment (jamais importe, jamais nettoye).
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        guard lumeAudioExtensions.contains(ext) else {
+            respond(status: "415 Unsupported Media Type",
+                    body: Data("Format non pris en charge (audio uniquement)".utf8))
             return
         }
 
@@ -374,6 +406,8 @@ final class HTTPConnection {
                             +'&code='+encodeURIComponent(codeInput.value.trim()),
                             {method:'POST',body:file});
         if(r.status===403){ li.textContent=file.name+' \\u274c code incorrect'; return; }
+        if(r.status===429){ li.textContent=file.name+' \\u274c trop de tentatives \\u2014 d\\u00e9sactive puis r\\u00e9active l\\u2019import Wi-Fi sur l\\u2019iPhone'; return; }
+        if(r.status===415){ li.textContent=file.name+' \\u274c format non pris en charge (audio uniquement)'; return; }
         li.textContent=file.name+(r.ok?' \\u2705 re\\u00e7u':' \\u274c erreur');
       }catch(e){ li.textContent=file.name+' \\u274c erreur r\\u00e9seau'; }
     }

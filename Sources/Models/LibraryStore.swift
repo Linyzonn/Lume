@@ -3,6 +3,11 @@ import AVFoundation
 import UIKit
 import Combine
 
+// Extensions audio reconnues. Constante GLOBALE (hors de tout acteur) :
+// elle est utilisee aussi bien sur le MainActor (imports) que sur la file
+// reseau du serveur d'import Wi-Fi (filtrage des envois).
+let lumeAudioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "aif", "aiff", "aifc", "caf"]
+
 // Le cerveau de la bibliotheque : importe les fichiers, lit les metadonnees,
 // sauvegarde tout sur le disque, gere playlists et favoris.
 @MainActor
@@ -54,7 +59,7 @@ final class LibraryStore: ObservableObject {
     private let thumbCache = NSCache<NSString, UIImage>()
 
     // Extensions audio reconnues pour l'import automatique.
-    static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "aif", "aiff", "aifc", "caf"]
+    static let audioExtensions: Set<String> = lumeAudioExtensions
 
     // Les repertoires sont injectables : les TESTS UNITAIRES passent des
     // dossiers temporaires et ne touchent plus jamais aux vraies donnees.
