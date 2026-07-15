@@ -323,7 +323,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func applyRate() {
-        let r = max(0.5, min(2.0, playbackRate))
+        // Bornes identiques a celles proposees dans l'interface (0,75x - 2x).
+        let r = max(0.75, min(2.0, playbackRate))
         timePitch.rate = r
         // CORRECTIF : le module de vitesse traite l'audio EN CONTINU, meme a
         // 1x, et son algorithme d'etirement temporel degrade legerement le
@@ -563,28 +564,36 @@ final class PlayerEngine: ObservableObject {
                       autoPlay: Bool, startPaused: Bool = false) {
         guard let lib = library else { return }
         let url = lib.url(for: track)
-        guard let file = try? AVAudioFile(forReading: url) else {
+        guard let file = try? AVAudioFile(forReading: url), file.length > 0 else {
             consecutiveLoadFailures += 1
             if consecutiveLoadFailures >= max(1, queue.count) {
                 consecutiveLoadFailures = 0
                 stopPlayback()
                 return
             }
-            next()
+            // recordStats: false — un fichier illisible ne doit pas compter
+            // comme un « skip » du morceau encore affiche (les stats etaient
+            // faussees a chaque echec en cascade).
+            advance(recordStats: false)
             return
         }
         consecutiveLoadFailures = 0
 
+        // Position de depart bornee A L'INTERIEUR du fichier : planifier
+        // 0 frame (seek au-dela de la fin, metadonnee de duree fausse)
+        // leve une exception AVFoundation.
+        let safeStart = min(max(0, startFrame), file.length - 1)
+
         players[i].stop()
         players[i].volume = 1.0
         files[i] = file
-        startFrames[i] = startFrame
+        startFrames[i] = safeStart
 
         generations[i] += 1
         let gen = generations[i]
-        let remaining = AVAudioFrameCount(max(0, file.length - startFrame))
+        let remaining = AVAudioFrameCount(file.length - safeStart)
         players[i].scheduleSegment(file,
-                                   startingFrame: startFrame,
+                                   startingFrame: safeStart,
                                    frameCount: remaining,
                                    at: nil,
                                    completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -599,7 +608,7 @@ final class PlayerEngine: ObservableObject {
             activeIndex = i
             currentTrack = track
             duration = computedDuration(for: i, fallback: track.duration)
-            currentTime = Double(startFrame) / max(1, file.processingFormat.sampleRate)
+            currentTime = Double(safeStart) / max(1, file.processingFormat.sampleRate)
             lastTickDate = nil
             if !startPaused, engineReady {
                 players[i].play()
@@ -718,10 +727,14 @@ final class PlayerEngine: ObservableObject {
         startTicker()
     }
 
-    func next() {
+    func next() { advance(recordStats: true) }
+
+    // Passage au morceau suivant. `recordStats` false quand l'avancee est
+    // technique (fichier illisible) et non un geste de l'utilisateur.
+    private func advance(recordStats: Bool) {
         cancelCrossfade()
         invalidatePreload()
-        if let track = currentTrack, duration > 0 {
+        if recordStats, let track = currentTrack, duration > 0 {
             if currentTime / duration < 0.8 {
                 onTrackSkipped?(track)
             } else {
@@ -851,17 +864,18 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Recherche de position (seek)
 
     func seek(to time: Double) {
-        guard let file = files[activeIndex] else { return }
+        guard time.isFinite, let file = files[activeIndex] else { return }
         let sr = file.processingFormat.sampleRate
         let frame = AVAudioFramePosition(max(0, time) * sr)
         guard let track = currentTrack else { return }
         cancelCrossfade()
         // NOTE : on ne touche PAS au pre-chargement gapless — la piste suivante
         // reste la meme, sa planification reste valable.
+        // startPaused quand on est en pause : avant, le morceau demarrait
+        // brievement (blip audible) avant d'etre remis en pause.
         let wasPlaying = isPlaying
-        load(track: track, intoPlayer: activeIndex, startFrame: frame, autoPlay: true)
-        if !wasPlaying { pause() }
-        currentTime = time
+        load(track: track, intoPlayer: activeIndex, startFrame: frame,
+             autoPlay: true, startPaused: !wasPlaying)
         // La position poussee a l'ecran verrouille n'est plus rafraichie en
         // continu : apres un seek (surtout en pause), on la synchronise ici.
         updateNowPlayingElapsed()
@@ -869,7 +883,7 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Crossfade
 
-    private func startCrossfade(to track: Track) {
+    private func startCrossfade(to track: Track, atQueueIndex targetIndex: Int) {
         invalidatePreload()
         let newPlayer = 1 - activeIndex
         isCrossfading = true
@@ -903,7 +917,8 @@ final class PlayerEngine: ObservableObject {
                 self.players[newPlayer].volume = min(1, p)
                 if step >= steps {
                     timer.invalidate()
-                    self.finishCrossfade(newPlayer: newPlayer, track: track)
+                    self.finishCrossfade(newPlayer: newPlayer, track: track,
+                                         targetIndex: targetIndex)
                 }
             }
         }
@@ -911,7 +926,7 @@ final class PlayerEngine: ObservableObject {
         fadeTimer = t
     }
 
-    private func finishCrossfade(newPlayer: Int, track: Track) {
+    private func finishCrossfade(newPlayer: Int, track: Track, targetIndex: Int) {
         if let finished = currentTrack { onTrackCompleted?(finished) }
         flushListenTime()
         players[activeIndex].stop()
@@ -920,7 +935,14 @@ final class PlayerEngine: ObservableObject {
         duration = computedDuration(for: newPlayer, fallback: track.duration)
         isPlaying = true
         isCrossfading = false
-        if let idx = queue.firstIndex(of: track) { queueIndex = idx }
+        // Index CAPTURE au declenchement du fondu : firstIndex(of:) pointait
+        // sur la premiere occurrence quand le meme titre etait deux fois dans
+        // la file (« Lire ensuite ») -> la lecture reculait dans la file.
+        if targetIndex < queue.count, queue[targetIndex].id == track.id {
+            queueIndex = targetIndex
+        } else if let idx = queue.firstIndex(of: track) {
+            queueIndex = idx   // la file a change pendant le fondu
+        }
         updateNowPlaying()
         persistSession()
     }
@@ -1010,8 +1032,8 @@ final class PlayerEngine: ObservableObject {
                 // le morceau suivant s'enchainait et la lecture continuait
                 // toute la nuit malgre le minuteur.
                 if remaining <= crossfadeDuration, remaining > 0.1,
-                   !stopAfterCurrentTrack, let (_, nextTrack) = upcoming() {
-                    startCrossfade(to: nextTrack)
+                   !stopAfterCurrentTrack, let (idx, nextTrack) = upcoming() {
+                    startCrossfade(to: nextTrack, atQueueIndex: idx)
                 }
             } else if remaining <= 15, remaining > 0.5, preloadedPlayer == nil,
                       !stopAfterCurrentTrack, let (idx, nextTrack) = upcoming() {
