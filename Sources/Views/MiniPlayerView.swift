@@ -3,6 +3,8 @@ import SwiftUI
 struct MiniPlayerView: View {
     @EnvironmentObject var engine: PlayerEngine
     var onTap: () -> Void
+    // Appui long : acces direct a la file d'attente sans ouvrir le lecteur.
+    @State private var showQueue = false
 
     var body: some View {
         if let track = engine.currentTrack {
@@ -62,6 +64,11 @@ struct MiniPlayerView: View {
             .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
+            .onLongPressGesture {
+                Haptics.light()
+                showQueue = true
+            }
+            .sheet(isPresented: $showQueue) { QueueView() }
         }
     }
 
