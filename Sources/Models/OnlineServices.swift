@@ -81,6 +81,24 @@ enum DeezerAPI {
 
     private struct ListResponse<T: Decodable>: Decodable { let data: [T] }
 
+    // Espacement REEL des requetes. L'ancienne pause fixe de 130 ms ne
+    // limitait rien en pratique : N requetes lancees en parallele dormaient
+    // toutes EN MEME TEMPS puis partaient d'un coup. Cet acteur attribue les
+    // creneaux en serie : ~12 requetes/s maximum, loin des ~50/5 s de l'API.
+    private actor RequestPacer {
+        private var nextSlot = Date.distantPast
+        func waitTurn() async {
+            let now = Date()
+            let slot = max(now, nextSlot)
+            nextSlot = slot.addingTimeInterval(0.08)
+            let delay = slot.timeIntervalSince(now)
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+    private static let pacer = RequestPacer()
+
     private static func get<T: Decodable>(_ urlString: String, as type: T.Type,
                                           ignoreCache: Bool = false) async -> T? {
         guard let url = URL(string: urlString) else { return nil }
@@ -93,9 +111,9 @@ enum DeezerAPI {
         if !ignoreCache, let cached = APICache.data(for: url, maxAge: 24 * 3600) {
             return try? JSONDecoder().decode(T.self, from: cached)
         }
-        // 2) Reseau, avec une petite pause anti rate-limit (l'API Deezer
-        //    limite a ~50 requetes / 5 s / IP ; on reste largement dessous).
-        try? await Task.sleep(nanoseconds: 130_000_000)
+        // 2) Reseau, cadence par le pacer (l'API Deezer limite a
+        //    ~50 requetes / 5 s / IP ; on reste largement dessous).
+        await pacer.waitTurn()
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
         if let (data, response) = try? await URLSession.shared.data(for: req),

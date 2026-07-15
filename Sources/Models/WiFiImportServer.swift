@@ -33,6 +33,9 @@ final class WiFiImportServer: ObservableObject {
     @Published var receivedCount = 0
     // Code d'appairage a 4 chiffres, regenere a chaque activation.
     @Published var pairingCode: String = ""
+    // Erreur de demarrage / d'execution, affichee dans les Reglages (avant,
+    // un port occupe faisait simplement retomber l'interrupteur sans un mot).
+    @Published var lastError: String?
 
     weak var library: LibraryStore?
 
@@ -45,6 +48,7 @@ final class WiFiImportServer: ObservableObject {
     func start(library: LibraryStore) {
         guard listener == nil else { return }
         self.library = library
+        lastError = nil
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
@@ -66,7 +70,10 @@ final class WiFiImportServer: ObservableObject {
             }
             l.stateUpdateHandler = { [weak self] state in
                 if case .failed = state {
-                    Task { @MainActor in self?.stop() }
+                    Task { @MainActor in
+                        self?.stop()
+                        self?.lastError = "Le serveur Wi-Fi s'est arrêté de façon inattendue. Réactive l'Import Wi-Fi pour réessayer."
+                    }
                 }
             }
             l.start(queue: .global(qos: .userInitiated))
@@ -79,6 +86,7 @@ final class WiFiImportServer: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = true
         } catch {
             isRunning = false
+            lastError = "Impossible de démarrer le serveur Wi-Fi (port \(Self.port) déjà utilisé ?). Réessaie dans quelques secondes."
         }
     }
 
@@ -195,7 +203,19 @@ final class HTTPConnection {
         receiveNext()
     }
 
+    // Fermeture TOUJOURS executee sur la file reseau : close() peut etre
+    // appele depuis le MainActor (arret du serveur) pendant qu'un callback
+    // de reception ecrit bodyHandle — l'acces croise sans synchronisation
+    // etait une course (crash possible).
+    private var closed = false
+
     func close() {
+        Self.queue.async { self.performClose() }
+    }
+
+    private func performClose() {
+        guard !closed else { return }
+        closed = true
         // Transfert interrompu : on ne laisse pas trainer de fichier partiel.
         if let bodyHandle {
             try? bodyHandle.close()
@@ -246,7 +266,14 @@ final class HTTPConnection {
         let path = parts[1]
 
         if method == "GET" {
-            respond(contentType: "text/html; charset=utf-8", body: Data(Self.pageHTML.utf8))
+            // La page n'est servie qu'a la racine ; les autres chemins
+            // (favicon.ico...) recoivent un vrai 404.
+            let pathOnly = path.split(separator: "?").first.map(String.init) ?? path
+            if pathOnly == "/" || pathOnly == "/index.html" {
+                respond(contentType: "text/html; charset=utf-8", body: Data(Self.pageHTML.utf8))
+            } else {
+                respond(status: "404 Not Found", body: Data("Introuvable".utf8))
+            }
             return
         }
 

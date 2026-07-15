@@ -55,10 +55,16 @@ enum LyricsFetcher {
         return (try? JSONDecoder().decode([LrclibEntry].self, from: data)) ?? []
     }
 
+    // User-Agent construit depuis le bundle : plus de version en dur qui ment.
+    private static let userAgent: String = {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        return "Lume/\(version) (https://github.com/Linyzonn/Lume)"
+    }()
+
     private static func requestData(url: URL) async throws -> Data {
         var req = URLRequest(url: url)
         // LRCLIB demande poliment un User-Agent identifiant l'application.
-        req.setValue("Lume/1.5 (https://github.com/Linyzonn/Lume)", forHTTPHeaderField: "User-Agent")
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 15
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw FetchError.network }

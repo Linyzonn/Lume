@@ -129,6 +129,11 @@ struct SettingsView: View {
             )) {
                 Label("Import Wi-Fi", systemImage: "wifi")
             }
+            if let error = wifiServer.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
             if wifiServer.isRunning {
                 if let address = wifiServer.address {
                     VStack(alignment: .leading, spacing: 6) {
