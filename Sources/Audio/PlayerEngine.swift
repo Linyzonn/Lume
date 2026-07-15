@@ -1005,8 +1005,12 @@ final class PlayerEngine: ObservableObject {
         if duration > 0, !isCrossfading {
             let remaining = duration - currentTime
             if crossfadeDuration > 0 {
-                // Declenchement du crossfade.
-                if remaining <= crossfadeDuration, remaining > 0.1, let (_, nextTrack) = upcoming() {
+                // Declenchement du crossfade. `stopAfterCurrentTrack` (minuteur
+                // « fin du morceau ») court-circuite le fondu : sans ce test,
+                // le morceau suivant s'enchainait et la lecture continuait
+                // toute la nuit malgre le minuteur.
+                if remaining <= crossfadeDuration, remaining > 0.1,
+                   !stopAfterCurrentTrack, let (_, nextTrack) = upcoming() {
                     startCrossfade(to: nextTrack)
                 }
             } else if remaining <= 15, remaining > 0.5, preloadedPlayer == nil,
