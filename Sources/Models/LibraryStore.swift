@@ -609,12 +609,22 @@ final class LibraryStore: ObservableObject {
             let fresh = await extractMetadata(from: fileURL,
                                               storedName: track.fileName,
                                               fallbackName: track.title)
-            guard let i = tracks.firstIndex(where: { $0.id == track.id }) else { continue }
+            guard let i = tracks.firstIndex(where: { $0.id == track.id }) else {
+                discardArtwork(fresh.artworkFileName)
+                continue
+            }
             tracks[i].title = fresh.title
             tracks[i].artist = fresh.artist
             tracks[i].album = fresh.album
             if fresh.duration > 0 { tracks[i].duration = fresh.duration }
-            if tracks[i].artworkFileName == nil { tracks[i].artworkFileName = fresh.artworkFileName }
+            if tracks[i].artworkFileName == nil {
+                tracks[i].artworkFileName = fresh.artworkFileName
+            } else {
+                // Le morceau a deja une pochette : la version fraichement
+                // extraite ne sert pas. Avant ce correctif, elle restait
+                // orpheline sur le disque a CHAQUE reanalyse.
+                discardArtwork(fresh.artworkFileName)
+            }
             if tracks[i].lyrics == nil { tracks[i].lyrics = fresh.lyrics }
         }
     }
@@ -755,6 +765,11 @@ final class LibraryStore: ObservableObject {
         let lib = self
         guard let name = await Task.detached(priority: .userInitiated, operation: { lib.saveArtwork(data) }).value,
               let i = tracks.firstIndex(where: { $0.id == track.id }) else { return false }
+        // La pochette remplacee est supprimee du disque (elle restait
+        // orpheline auparavant).
+        if tracks[i].artworkFileName != name {
+            discardArtwork(tracks[i].artworkFileName)
+        }
         tracks[i].artworkFileName = name
         save()
         return true
@@ -907,6 +922,13 @@ final class LibraryStore: ObservableObject {
             playlists[i].trackIDs.append(track.id)
         }
         save()
+    }
+
+    // Supprime du disque un fichier de pochette qui ne sera pas (ou plus)
+    // utilise — sans quoi il resterait orphelin pour toujours.
+    private func discardArtwork(_ name: String?) {
+        guard let name else { return }
+        try? FileManager.default.removeItem(at: artworkDir.appendingPathComponent(name))
     }
 
     // nonisolated : appelable depuis les taches d'arriere-plan (le decodage
