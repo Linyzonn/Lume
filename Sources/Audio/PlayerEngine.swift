@@ -442,6 +442,22 @@ final class PlayerEngine: ObservableObject {
         try? session.setActive(true)
     }
 
+    // Demarre le moteur si necessaire. Retourne false si l'audio est
+    // indisponible (ex. appel telephonique en cours, session refusee par
+    // iOS) : dans ce cas, les appelants ne doivent PAS appeler play() —
+    // AVAudioPlayerNode.play() sur un moteur arrete leve une exception
+    // Objective-C non rattrapable, donc un CRASH de l'app.
+    @discardableResult
+    private func startEngineIfNeeded() -> Bool {
+        if engine.isRunning { return true }
+        do {
+            try engine.start()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Lecture d'une file
 
     func play(tracks: [Track], startAt index: Int) {
@@ -567,7 +583,7 @@ final class PlayerEngine: ObservableObject {
             Task { @MainActor in self?.handlePlaybackFinished(player: i, generation: gen) }
         }
 
-        if !engine.isRunning { try? engine.start() }
+        let engineReady = startEngineIfNeeded()
 
         if autoPlay {
             activeIndex = i
@@ -575,11 +591,18 @@ final class PlayerEngine: ObservableObject {
             duration = computedDuration(for: i, fallback: track.duration)
             currentTime = Double(startFrame) / max(1, file.processingFormat.sampleRate)
             lastTickDate = nil
-            players[i].play()
-            isPlaying = true
+            if engineReady {
+                players[i].play()
+                isPlaying = true
+                startTicker()
+            } else {
+                // Audio indisponible (appel en cours...) : tout est pret et
+                // en pause — l'utilisateur relance avec le bouton lecture.
+                isPlaying = false
+                stopTicker()
+            }
             updateNowPlaying()
             persistSession()
-            startTicker()
         }
     }
 
@@ -637,7 +660,7 @@ final class PlayerEngine: ObservableObject {
         // Bascule gapless : la piste suivante est deja prete sur l'autre lecteur.
         if let pp = preloadedPlayer, let pi = preloadedIndex, let pid = preloadedTrackID,
            pp != i, !stopAfterCurrentTrack, repeatMode != .one,
-           pi < queue.count, queue[pi].id == pid {
+           pi < queue.count, queue[pi].id == pid, startEngineIfNeeded() {
             if let finished = currentTrack { onTrackCompleted?(finished) }
             flushListenTime()
             players[pp].play()
@@ -676,7 +699,7 @@ final class PlayerEngine: ObservableObject {
     }
 
     func resume() {
-        if !engine.isRunning { try? engine.start() }
+        guard startEngineIfNeeded() else { return }
         players[activeIndex].play()
         if isCrossfading { players[1 - activeIndex].play() }
         isPlaying = true
@@ -835,6 +858,12 @@ final class PlayerEngine: ObservableObject {
         let newPlayer = 1 - activeIndex
         isCrossfading = true
         load(track: track, intoPlayer: newPlayer, startFrame: 0, autoPlay: false)
+        guard engine.isRunning else {
+            // Moteur indisponible : pas de fondu, l'enchainement normal se
+            // fera a la fin du morceau (et surtout, pas de play() fatal).
+            isCrossfading = false
+            return
+        }
         players[newPlayer].volume = 0
         players[newPlayer].play()
 
