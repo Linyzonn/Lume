@@ -2,6 +2,22 @@
 
 Lume est un lecteur de musique **local** pour iPhone : il lit **tes propres fichiers** (MP3, M4A, AAC, FLAC, WAV), sans pub et sans compte. **La lecture fonctionne 100 % hors connexion** — Internet ne sert qu'aux bonus : l'onglet **Découvrir** (recommandations), la récupération de pochettes, de photos d'artistes et de paroles en ligne.
 
+## 🆕 Nouveautés 2.3 — fiabilité & sécurité
+
+- 🛟 **Plus de crash** quand la lecture démarre pendant un appel : si l'audio est occupé, l'app reste en pause et l'explique clairement.
+- 🎧 **Le son ne coupe plus quand on connecte des AirPods** ou change de sortie audio en pleine lecture : la musique reprend automatiquement sur la nouvelle sortie.
+- 🤝 **Ouvrir Lume ne coupe plus la musique des autres apps** (Spotify, podcast…) : l'audio n'est pris qu'au moment de lire, et rendu à la fin.
+- 🔐 **Bibliothèque incassable** : copie de secours automatique, fichier corrompu mis en quarantaine, reconstruction depuis les fichiers audio en dernier recours — plus aucune perte silencieuse.
+- 🔎 **Paroles, pochettes et recommandations fonctionnent pour « Simon & Garfunkel », « Earth, Wind & Fire », « Dan + Shay »…** (bug d'encodage des `&` et `+` dans les requêtes).
+- 🌙 Le minuteur « fin du morceau » arrête vraiment la lecture, même avec le crossfade activé.
+- 🛡️ **Import Wi-Fi durci** : verrouillage après 5 codes faux (anti force brute) et fichiers audio uniquement.
+- 🚀 L'import ne fige plus l'interface (copie et analyse en arrière-plan) ; récupération des pochettes/photos d'artistes désormais **non bloquante et annulable**.
+- 🧹 Plus de pochettes orphelines qui gonflent le stockage à chaque réanalyse.
+- 🗑️ Supprimer un morceau demande confirmation, le retire de la file et passe au suivant s'il était en lecture.
+- 📢 Les erreurs ne sont plus silencieuses : échec d'écriture (disque plein), sauvegarde invalide, serveur Wi-Fi qui ne démarre pas… tout est expliqué en clair.
+- ♿ VoiceOver : lignes de morceaux et mini-lecteur correctement annoncés ; petits retours haptiques sur lecture/pause et favoris.
+- 🎨 Changer de couleur de thème ne renvoie plus sur le premier onglet.
+
 ## 🆕 Nouveautés 2.2
 
 - 🔋 **Grosse économie de batterie** : le moteur audio et l'horloge interne ne tournent plus que pendant la lecture (avant, ils tournaient en permanence, même app en pause en arrière-plan), et l'écran verrouillé n'est plus mis à jour 4 fois par seconde.
