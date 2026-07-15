@@ -158,6 +158,14 @@ enum DeezerAPI {
         await get("https://api.deezer.com/track/\(id)", as: TrackDetails.self)
     }
 
+    // Recherche libre de titres (barre de recherche de Decouvrir).
+    static func searchTracks(query: String, limit: Int = 25) async -> [TrackItem] {
+        let q = APIURL.encodeValue(query)
+        let r: ListResponse<TrackItem>? = await get("https://api.deezer.com/search?q=\(q)&limit=\(limit)",
+                                                    as: ListResponse<TrackItem>.self)
+        return r?.data ?? []
+    }
+
     // Recherche d'un titre precis (pour retrouver le BPM des morceaux de ta bibliotheque).
     static func searchTrack(title: String, artist: String) async -> TrackItem? {
         let q = APIURL.encodeValue("artist:\"\(artist)\" track:\"\(title)\"")

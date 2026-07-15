@@ -10,11 +10,22 @@ struct DiscoverView: View {
     @StateObject private var recommender = Recommender()
     @StateObject private var preview = PreviewPlayer()
     @State private var showWishlist = false
+    // Recherche libre sur Deezer (barre de recherche de l'onglet).
+    @State private var searchText = ""
+    @State private var searchResults: [Recommendation] = []
+    @State private var isSearchingOnline = false
+    @State private var searchCameBackEmpty = false
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespaces)
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if recommender.isLoading && recommender.sections.isEmpty {
+                if !searchQuery.isEmpty {
+                    searchResultsList
+                } else if recommender.isLoading && recommender.sections.isEmpty {
                     loadingState
                 } else if let message = recommender.message, recommender.sections.isEmpty {
                     emptyState(message)
@@ -22,6 +33,9 @@ struct DiscoverView: View {
                     content
                 }
             }
+            .searchable(text: $searchText,
+                        prompt: "Chercher un titre ou un artiste sur Deezer")
+            .task(id: searchQuery) { await runSearch(searchQuery) }
             .navigationTitle("Découvrir")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -115,6 +129,69 @@ struct DiscoverView: View {
             .padding(.bottom, 70)   // espace pour le mini-lecteur
         }
         .refreshable { await recommender.refresh(library: library, force: true) }
+    }
+
+    // MARK: - Recherche Deezer
+
+    private func runSearch(_ query: String) async {
+        guard query.count >= 2 else {
+            searchResults = []
+            isSearchingOnline = false
+            searchCameBackEmpty = false
+            return
+        }
+        isSearchingOnline = true
+        searchCameBackEmpty = false
+        // Anti-rebond : on attend que la frappe se calme avant d'interroger
+        // Deezer (la tache est annulee et relancee a chaque caractere).
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        guard !Task.isCancelled else { return }
+        let items = await DeezerAPI.searchTracks(query: query)
+        guard !Task.isCancelled else { return }
+        searchResults = items.map {
+            Recommendation(id: $0.id,
+                           title: $0.title,
+                           artistName: $0.artist.name,
+                           coverURL: $0.album?.cover_medium ?? $0.album?.cover_big,
+                           previewURL: $0.preview,
+                           linkURL: $0.link,
+                           reason: "Résultat Deezer")
+        }
+        isSearchingOnline = false
+        searchCameBackEmpty = items.isEmpty
+    }
+
+    private var searchResultsList: some View {
+        List {
+            if isSearchingOnline && searchResults.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Recherche sur Deezer…").foregroundStyle(.secondary)
+                }
+            } else if searchResults.isEmpty {
+                Text(searchCameBackEmpty
+                     ? "Aucun résultat pour « \(searchQuery) ». Vérifie l'orthographe ou ta connexion Internet."
+                     : "Tape au moins 2 caractères.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(searchResults) { item in
+                DeezerResultRow(item: item,
+                                isPlaying: preview.playingID == item.id,
+                                isWished: library.isWished(item.id),
+                                onPlayTap: { preview.toggle(item, mainEngine: engine) },
+                                onWishTap: {
+                    library.toggleWish(WishItem(id: item.id,
+                                                title: item.title,
+                                                artist: item.artistName,
+                                                coverURL: item.coverURL,
+                                                linkURL: item.linkURL))
+                })
+            }
+        }
+        .listStyle(.plain)
+        .safeAreaInset(edge: .bottom) {
+            if engine.currentTrack != nil { Color.clear.frame(height: 64) }
+        }
     }
 
     private var offlineDateLabel: String {
@@ -255,6 +332,68 @@ private struct RecommendationCard: View {
     }
 }
 
+
+// Ligne d'un resultat de recherche Deezer : extrait 30 s + envie + liens.
+private struct DeezerResultRow: View {
+    let item: Recommendation
+    let isPlaying: Bool
+    let isWished: Bool
+    let onPlayTap: () -> Void
+    let onWishTap: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                AsyncImage(url: item.coverURL.flatMap { URL(string: $0) }) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        LinearGradient(colors: [LumeTheme.accent.opacity(0.5),
+                                                LumeTheme.accentSecondary.opacity(0.5)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                        Image(systemName: "music.note")
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                }
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                if item.previewURL != nil {
+                    Circle().fill(.black.opacity(0.45)).frame(width: 26, height: 26)
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).lineLimit(1)
+                Text(item.artistName)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button(action: onWishTap) {
+                Image(systemName: isWished ? "bookmark.fill" : "bookmark")
+                    .foregroundStyle(isWished ? LumeTheme.accent : .secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isWished ? "Retirer des envies" : "Ajouter aux envies")
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if item.previewURL != nil { onPlayTap() } }
+        .contextMenu {
+            if let link = item.linkURL, let url = URL(string: link) {
+                Link(destination: url) {
+                    Label("Ouvrir dans Deezer", systemImage: "arrow.up.right.square")
+                }
+            }
+            if let yt = APIURL.build("https://www.youtube.com/results",
+                                     [("search_query", "\(item.artistName) \(item.title)")]) {
+                Link(destination: yt) {
+                    Label("Chercher sur YouTube", systemImage: "magnifyingglass")
+                }
+            }
+        }
+    }
+}
 
 // MARK: - Mes envies : titres a recuperer, reconnus automatiquement a l'import
 
