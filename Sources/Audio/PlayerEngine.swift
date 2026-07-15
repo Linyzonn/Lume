@@ -560,22 +560,26 @@ final class PlayerEngine: ObservableObject {
     // `startPaused` : prepare tout (etat, planification) SANS demarrer le
     // moteur ni la session audio — utilise par la reprise de session au
     // lancement et par le seek en pause (aucune activation audio, aucun blip).
+    // Retourne false si le fichier est illisible (l'avancee automatique vers
+    // la piste suivante a alors deja ete faite) : les appelants qui enchainent
+    // des actions sur ce lecteur (crossfade) doivent verifier le retour.
+    @discardableResult
     private func load(track: Track, intoPlayer i: Int, startFrame: AVAudioFramePosition,
-                      autoPlay: Bool, startPaused: Bool = false) {
-        guard let lib = library else { return }
+                      autoPlay: Bool, startPaused: Bool = false) -> Bool {
+        guard let lib = library else { return false }
         let url = lib.url(for: track)
         guard let file = try? AVAudioFile(forReading: url), file.length > 0 else {
             consecutiveLoadFailures += 1
             if consecutiveLoadFailures >= max(1, queue.count) {
                 consecutiveLoadFailures = 0
                 stopPlayback()
-                return
+                return false
             }
             // recordStats: false — un fichier illisible ne doit pas compter
             // comme un « skip » du morceau encore affiche (les stats etaient
             // faussees a chaque echec en cascade).
             advance(recordStats: false)
-            return
+            return false
         }
         consecutiveLoadFailures = 0
 
@@ -624,6 +628,7 @@ final class PlayerEngine: ObservableObject {
             updateNowPlaying()
             persistSession()
         }
+        return true
     }
 
     private func computedDuration(for i: Int, fallback: Double) -> Double {
@@ -642,7 +647,8 @@ final class PlayerEngine: ObservableObject {
     // d'ou un blanc audible entre les pistes).
     private func preload(track: Track, atQueueIndex idx: Int) {
         guard let lib = library,
-              let file = try? AVAudioFile(forReading: lib.url(for: track)) else { return }
+              let file = try? AVAudioFile(forReading: lib.url(for: track)),
+              file.length > 0 else { return }
         let j = 1 - activeIndex
         players[j].stop()
         players[j].volume = 1.0
@@ -813,7 +819,10 @@ final class PlayerEngine: ObservableObject {
         invalidatePreload()
         let wasCurrent = currentTrack?.id == id
         let wasPlaying = isPlaying
-        if wasCurrent { cancelCrossfade() }
+        // Fondu annule dans tous les cas : la piste supprimee peut etre celle
+        // qui est en train d'arriver en fondu (le fondu se re-declenchera au
+        // prochain tic vers la bonne piste).
+        cancelCrossfade()
 
         // Retire toutes les occurrences et recale l'index.
         let removedBefore = queue.prefix(queueIndex).filter { $0.id == id }.count
@@ -930,7 +939,11 @@ final class PlayerEngine: ObservableObject {
         invalidatePreload()
         let newPlayer = 1 - activeIndex
         isCrossfading = true
-        load(track: track, intoPlayer: newPlayer, startFrame: 0, autoPlay: false)
+        // Fichier illisible : load() a deja avance a la piste suivante (et
+        // remis isCrossfading a false via cancelCrossfade) — surtout ne pas
+        // demarrer un fondu sur un lecteur vide, qui aurait ETEINT le morceau
+        // fraichement lance puis affiche le titre illisible.
+        guard load(track: track, intoPlayer: newPlayer, startFrame: 0, autoPlay: false) else { return }
         guard engine.isRunning else {
             // Moteur indisponible : pas de fondu, l'enchainement normal se
             // fera a la fin du morceau (et surtout, pas de play() fatal).
