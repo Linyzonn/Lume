@@ -268,6 +268,33 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Import de fichiers
 
+    // Resultat de la copie + validation d'un fichier (fait hors du thread
+    // principal : copier un gros FLAC bloquait toute l'interface).
+    private enum ImportValidation { case ok, unreadable, unsupported }
+
+    private static func copyAndValidate(from source: URL, to dest: URL,
+                                        move: Bool) async -> ImportValidation {
+        await Task.detached(priority: .userInitiated) { () -> ImportValidation in
+            do {
+                if move {
+                    try FileManager.default.moveItem(at: source, to: dest)
+                } else {
+                    try FileManager.default.copyItem(at: source, to: dest)
+                }
+            } catch {
+                return .unreadable
+            }
+            // Validation IMMEDIATE : si le moteur audio ne sait pas lire ce
+            // fichier (ex. .opus), on le refuse maintenant avec un message
+            // clair, plutot que de decouvrir le probleme a la lecture.
+            if (try? AVAudioFile(forReading: dest)) == nil {
+                try? FileManager.default.removeItem(at: dest)
+                return .unsupported
+            }
+            return .ok
+        }.value
+    }
+
     func importFiles(_ urls: [URL]) async {
         isImporting = true
         importErrors = []
@@ -283,20 +310,15 @@ final class LibraryStore: ObservableObject {
             let storedName = "\(UUID().uuidString).\(ext)"
             let dest = tracksDir.appendingPathComponent(storedName)
 
-            do {
-                try FileManager.default.copyItem(at: source, to: dest)
-            } catch {
+            switch await Self.copyAndValidate(from: source, to: dest, move: false) {
+            case .unreadable:
                 importErrors.append("\(source.lastPathComponent) : fichier illisible ou inaccessible")
                 continue
-            }
-
-            // Validation IMMEDIATE : si le moteur audio ne sait pas lire ce
-            // fichier (ex. .opus), on le refuse maintenant avec un message
-            // clair, plutot que de decouvrir le probleme a la lecture.
-            if (try? AVAudioFile(forReading: dest)) == nil {
-                try? FileManager.default.removeItem(at: dest)
+            case .unsupported:
                 importErrors.append("\(source.lastPathComponent) : format audio non pris en charge")
                 continue
+            case .ok:
+                break
             }
 
             let track = await extractMetadata(from: dest,
@@ -338,18 +360,14 @@ final class LibraryStore: ObservableObject {
             let ext = source.pathExtension.isEmpty ? "m4a" : source.pathExtension
             let storedName = "\(UUID().uuidString).\(ext)"
             let dest = tracksDir.appendingPathComponent(storedName)
-            do {
-                try fm.moveItem(at: source, to: dest)
-            } catch {
+            switch await Self.copyAndValidate(from: source, to: dest, move: true) {
+            case .unreadable:
                 continue
-            }
-
-            // Meme validation que pour l'import manuel : fichier illisible
-            // par le moteur audio -> refuse tout de suite, avec un message.
-            if (try? AVAudioFile(forReading: dest)) == nil {
-                try? fm.removeItem(at: dest)
+            case .unsupported:
                 importErrors.append("\(source.lastPathComponent) : format audio non pris en charge")
                 continue
+            case .ok:
+                break
             }
             let track = await extractMetadata(from: dest,
                                               storedName: storedName,
@@ -484,7 +502,12 @@ final class LibraryStore: ObservableObject {
                     if let v = try? await item.load(.stringValue), !v.isEmpty { album = v }
                 case .commonKeyArtwork:
                     if let data = try? await item.load(.dataValue) {
-                        artworkName = saveArtwork(data)
+                        // Decodage + redimensionnement + ecriture JPEG hors
+                        // du thread principal (travail lourd par morceau).
+                        let lib = self
+                        artworkName = await Task.detached(priority: .userInitiated) {
+                            lib.saveArtwork(data)
+                        }.value
                     }
                 default:
                     break
@@ -728,8 +751,9 @@ final class LibraryStore: ObservableObject {
     @discardableResult
     func fetchArtworkOnline(for track: Track) async -> Bool {
         let mainArtist = track.artistList.first ?? track.artist
-        guard let data = await ITunesArtwork.fetchArtworkData(title: track.title, artist: mainArtist),
-              let name = saveArtwork(data),
+        guard let data = await ITunesArtwork.fetchArtworkData(title: track.title, artist: mainArtist) else { return false }
+        let lib = self
+        guard let name = await Task.detached(priority: .userInitiated, operation: { lib.saveArtwork(data) }).value,
               let i = tracks.firstIndex(where: { $0.id == track.id }) else { return false }
         tracks[i].artworkFileName = name
         save()
@@ -885,7 +909,9 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    private func saveArtwork(_ data: Data) -> String? {
+    // nonisolated : appelable depuis les taches d'arriere-plan (le decodage
+    // d'image et l'ecriture JPEG n'ont rien a faire sur le thread principal).
+    nonisolated private func saveArtwork(_ data: Data) -> String? {
         guard let image = UIImage(data: data) else { return nil }
         // On redimensionne raisonnablement pour economiser l'espace.
         let resized = image.resized(maxDimension: 600)
