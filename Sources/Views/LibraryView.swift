@@ -21,6 +21,9 @@ struct LibraryView: View {
     @State private var showImporter = false
     @State private var trackForPlaylist: Track?
     @State private var showImportErrors = false
+    // Suppression avec confirmation : effacer un morceau supprime aussi son
+    // FICHIER audio de l'iPhone — irreversible, donc jamais en un seul geste.
+    @State private var trackToDelete: Track?
 
     var body: some View {
         NavigationStack {
@@ -102,6 +105,18 @@ struct LibraryView: View {
             } message: {
                 Text(library.startupNotice ?? "")
             }
+            .alert("Supprimer ce morceau ?", isPresented: Binding(
+                get: { trackToDelete != nil },
+                set: { if !$0 { trackToDelete = nil } }
+            ), presenting: trackToDelete) { track in
+                Button("Supprimer", role: .destructive) {
+                    library.delete(track)
+                    trackToDelete = nil
+                }
+                Button("Annuler", role: .cancel) { trackToDelete = nil }
+            } message: { track in
+                Text("« \(track.title) » sera retiré de la bibliothèque et son fichier audio supprimé de l'iPhone. Cette action est définitive.")
+            }
             .safeAreaInset(edge: .bottom) {
                 // Espace pour ne pas masquer la derniere ligne sous le mini-lecteur.
                 if engine.currentTrack != nil { Color.clear.frame(height: 64) }
@@ -164,7 +179,7 @@ struct LibraryView: View {
                 TrackRow(track: track, context: tracks)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            library.delete(track)
+                            trackToDelete = track
                         } label: { Label("Supprimer", systemImage: "trash") }
                     }
                     .swipeActions(edge: .leading) {
@@ -244,7 +259,7 @@ struct LibraryView: View {
             library.toggleFavorite(track)
         } label: { Label("Favori", systemImage: "heart") }
         Button(role: .destructive) {
-            library.delete(track)
+            trackToDelete = track
         } label: { Label("Supprimer", systemImage: "trash") }
     }
 
