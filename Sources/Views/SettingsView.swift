@@ -243,25 +243,38 @@ struct SettingsView: View {
                     Label("Réanalyser les métadonnées", systemImage: "arrow.clockwise")
                 }
             }
-            .disabled(library.isImporting)
+            .disabled(library.isImporting || library.onlineTaskProgress != nil)
             Button {
                 duplicatesRemoved = library.removeDuplicateTracks()
             } label: {
                 Label("Nettoyer les doublons", systemImage: "doc.on.doc")
             }
-            .disabled(library.isImporting)
+            .disabled(library.isImporting || library.onlineTaskProgress != nil)
             Button {
                 Task { artworkFound = await library.fetchMissingArtwork() }
             } label: {
                 Label("Récupérer les pochettes manquantes", systemImage: "photo.badge.arrow.down")
             }
-            .disabled(library.isImporting)
+            .disabled(library.isImporting || library.onlineTaskProgress != nil)
             Button {
                 Task { artistPhotosFound = await library.fetchAllArtistImages() }
             } label: {
                 Label("Récupérer les photos d'artistes", systemImage: "person.crop.circle.badge.plus")
             }
-            .disabled(library.isImporting)
+            .disabled(library.isImporting || library.onlineTaskProgress != nil)
+            // Progression des taches en ligne : discrete et annulable
+            // (avant, elles affichaient l'overlay bloquant de l'import).
+            if let progress = library.onlineTaskProgress {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text(progress)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Annuler") { library.cancelOnlineTask() }
+                        .foregroundStyle(.red)
+                }
+            }
         } header: {
             Text("Bibliothèque")
         } footer: {

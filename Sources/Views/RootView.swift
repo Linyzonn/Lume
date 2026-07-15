@@ -5,28 +5,39 @@ struct RootView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("resumeOnLaunch") private var resumeOnLaunch = false
+    // Onglet actif MEMORISE : changer de theme reconstruit la hierarchie
+    // (.id(themeID) dans LumeApp) et renvoyait brutalement sur « Musique ».
+    @AppStorage("ui.selectedTab") private var selectedTab = 0
     @State private var showNowPlaying = false
+
+    // Hauteur standard de la tab bar iPhone en portrait.
+    private let tabBarHeight: CGFloat = 49
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            TabView {
+            TabView(selection: $selectedTab) {
                 LibraryView()
                     .tabItem { Label("Musique", systemImage: "music.note.list") }
+                    .tag(0)
                 PlaylistsView()
                     .tabItem { Label("Playlists", systemImage: "square.stack") }
+                    .tag(1)
                 DiscoverView()
                     .tabItem { Label("Découvrir", systemImage: "sparkles") }
+                    .tag(2)
                 SearchView()
                     .tabItem { Label("Recherche", systemImage: "magnifyingglass") }
+                    .tag(3)
                 SettingsView()
                     .tabItem { Label("Réglages", systemImage: "gearshape") }
+                    .tag(4)
             }
 
             // Mini-lecteur flottant au-dessus de la barre d'onglets.
             if engine.currentTrack != nil {
                 MiniPlayerView(onTap: { showNowPlaying = true })
                     .padding(.horizontal, 8)
-                    .padding(.bottom, 49)   // hauteur de la tab bar
+                    .padding(.bottom, tabBarHeight)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }

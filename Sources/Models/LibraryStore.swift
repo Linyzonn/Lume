@@ -26,6 +26,13 @@ final class LibraryStore: ObservableObject {
     // save() qui echouait etait totalement silencieux : donnees perdues a
     // la fermeture sans que l'utilisateur ne le sache.
     @Published var persistenceError: String?
+    // Progression des taches en ligne NON bloquantes (pochettes, photos
+    // d'artistes). Separee de isImporting : ces taches n'affichent plus
+    // l'overlay plein ecran d'import et sont annulables.
+    @Published var onlineTaskProgress: String?
+    private var onlineTaskCancelled = false
+
+    func cancelOnlineTask() { onlineTaskCancelled = true }
 
     // Statistiques d'ecoute, stockees SEPAREMENT de la bibliotheque
     // (fichier stats.json) pour ne jamais mettre en peril tes donnees.
@@ -310,6 +317,12 @@ final class LibraryStore: ObservableObject {
     }
 
     func importFiles(_ urls: [URL]) async {
+        // Un import peut deja etre en cours (scan de la boite Wi-Fi...) :
+        // on attend notre tour au lieu d'entremeler deux imports qui
+        // partagent indicateurs et drapeaux.
+        while isImporting {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
         isImporting = true
         importErrors = []
         defer { isImporting = false; importProgress = ""; save() }
@@ -796,14 +809,16 @@ final class LibraryStore: ObservableObject {
     }
 
     // Recupere toutes les pochettes manquantes. Retourne le nombre trouve.
+    // Tache NON bloquante (pas d'overlay d'import) et annulable.
     func fetchMissingArtwork() async -> Int {
-        guard !isImporting else { return 0 }
-        isImporting = true
-        defer { isImporting = false; importProgress = "" }
+        guard onlineTaskProgress == nil, !isImporting else { return 0 }
+        onlineTaskCancelled = false
+        defer { onlineTaskProgress = nil }
         let missing = tracks.filter { $0.artworkFileName == nil }
         var found = 0
         for (index, track) in missing.enumerated() {
-            importProgress = "Pochettes \(index + 1)/\(missing.count)…"
+            if onlineTaskCancelled { break }
+            onlineTaskProgress = "Pochettes \(index + 1)/\(missing.count)…"
             if await fetchArtworkOnline(for: track) { found += 1 }
         }
         return found
@@ -847,15 +862,17 @@ final class LibraryStore: ObservableObject {
         return true
     }
 
-    // Telecharge les photos manquantes de tous les artistes. Retourne le nombre trouve.
+    // Telecharge les photos manquantes de tous les artistes. Retourne le
+    // nombre trouve. Tache NON bloquante et annulable, comme les pochettes.
     func fetchAllArtistImages() async -> Int {
-        guard !isImporting else { return 0 }
-        isImporting = true
-        defer { isImporting = false; importProgress = "" }
+        guard onlineTaskProgress == nil, !isImporting else { return 0 }
+        onlineTaskCancelled = false
+        defer { onlineTaskProgress = nil }
         let names = artists.keys.filter { !hasArtistImage($0) }.sorted()
         var found = 0
         for (index, name) in names.enumerated() {
-            importProgress = "Photos d'artistes \(index + 1)/\(names.count)…"
+            if onlineTaskCancelled { break }
+            onlineTaskProgress = "Photos d'artistes \(index + 1)/\(names.count)…"
             if await fetchArtistImage(for: name) { found += 1 }
         }
         return found
