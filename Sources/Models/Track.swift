@@ -37,6 +37,24 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
         self.isFavorite = isFavorite
     }
 
+    // Decodage TOLERANT : si un champ manque (ancienne sauvegarde, base
+    // partiellement ecrite, evolution du format), on applique une valeur par
+    // defaut au lieu de faire echouer le decodage de TOUTE la bibliotheque —
+    // c'etait la premiere cause possible de "bibliotheque vide" au lancement.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        fileName = try c.decode(String.self, forKey: .fileName)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Titre inconnu"
+        artist = try c.decodeIfPresent(String.self, forKey: .artist) ?? "Artiste inconnu"
+        album = try c.decodeIfPresent(String.self, forKey: .album) ?? "Album inconnu"
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 0
+        artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
+        lyrics = try c.decodeIfPresent(String.self, forKey: .lyrics)
+        dateAdded = try c.decodeIfPresent(Date.self, forKey: .dateAdded) ?? Date()
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+    }
+
     static func == (lhs: Track, rhs: Track) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }

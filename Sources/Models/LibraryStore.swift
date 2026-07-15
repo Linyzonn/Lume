@@ -14,6 +14,9 @@ final class LibraryStore: ObservableObject {
     // Fichiers refuses lors du dernier import (nom + raison), pour informer
     // l'utilisateur au lieu d'ignorer silencieusement.
     @Published var importErrors: [String] = []
+    // Message affiche au lancement quand la bibliotheque a du etre recuperee
+    // (copie de secours ou reconstruction depuis les fichiers audio).
+    @Published var startupNotice: String?
 
     // Statistiques d'ecoute, stockees SEPAREMENT de la bibliotheque
     // (fichier stats.json) pour ne jamais mettre en peril tes donnees.
@@ -169,9 +172,46 @@ final class LibraryStore: ObservableObject {
         var playlists: [Playlist]
     }
 
+    private var libraryBackupFile: URL { libraryFile.appendingPathExtension("bak") }
+
+    private static func decodeLibrary(at url: URL) -> LibraryData? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(LibraryData.self, from: data)
+    }
+
     private func load() {
-        guard let data = try? Data(contentsOf: libraryFile),
-              let decoded = try? JSONDecoder().decode(LibraryData.self, from: data) else { return }
+        let fm = FileManager.default
+        if let decoded = Self.decodeLibrary(at: libraryFile) {
+            apply(decoded)
+            return
+        }
+        // Fichier principal absent : premiere ouverture… ou base perdue avec
+        // des fichiers audio encore presents -> on les re-relie.
+        guard fm.fileExists(atPath: libraryFile.path) else {
+            rebuildFromFilesOnDisk(notify: false)
+            return
+        }
+        // library.json EXISTE mais est illisible (corruption, app tuee en
+        // pleine ecriture…). AVANT ce correctif, l'app repartait de zero en
+        // silence et le prochain save() ECRASAIT le fichier : bibliotheque
+        // definitivement perdue. Desormais :
+        //  1) le fichier corrompu est mis de cote (jamais ecrase),
+        //  2) on restaure la copie de secours si elle est lisible,
+        //  3) en dernier recours on reconstruit depuis les fichiers audio.
+        let quarantine = libraryFile.appendingPathExtension("corrompu")
+        try? fm.removeItem(at: quarantine)
+        try? fm.copyItem(at: libraryFile, to: quarantine)
+        try? fm.removeItem(at: libraryFile)   // save() ne doit pas copier le corrompu vers .bak
+        if let backup = Self.decodeLibrary(at: libraryBackupFile) {
+            apply(backup)
+            save()
+            startupNotice = "La bibliothèque n'a pas pu être lue ; la copie de secours a été restaurée automatiquement."
+            return
+        }
+        rebuildFromFilesOnDisk(notify: true)
+    }
+
+    private func apply(_ decoded: LibraryData) {
         // On ne garde que les morceaux dont le fichier existe encore.
         tracks = decoded.tracks.filter {
             FileManager.default.fileExists(atPath: tracksDir.appendingPathComponent($0.fileName).path)
@@ -186,11 +226,39 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    // Reconstruit une bibliotheque minimale depuis les fichiers audio du
+    // stockage interne : meme si la base est perdue, les morceaux ne
+    // deviennent plus des orphelins invisibles. Les vrais titres / artistes /
+    // pochettes se retrouvent ensuite via « Réanalyser les métadonnées ».
+    private func rebuildFromFilesOnDisk(notify: Bool) {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: tracksDir, includingPropertiesForKeys: nil)) ?? []
+        let audio = files.filter { Self.audioExtensions.contains($0.pathExtension.lowercased()) }
+        guard !audio.isEmpty else { return }
+        tracks = audio.map { url in
+            Track(fileName: url.lastPathComponent,
+                  title: url.deletingPathExtension().lastPathComponent,
+                  artist: "Artiste inconnu",
+                  album: "Album inconnu",
+                  duration: 0)
+        }
+        save()
+        if notify {
+            startupNotice = "La bibliothèque était illisible : \(tracks.count) morceau(x) ont été retrouvés depuis tes fichiers. Va dans Réglages → « Réanalyser les métadonnées » pour restaurer titres, artistes et pochettes."
+        }
+    }
+
     func save() {
         let data = LibraryData(tracks: tracks, playlists: playlists)
-        if let encoded = try? JSONEncoder().encode(data) {
-            try? encoded.write(to: libraryFile, options: .atomic)
+        guard let encoded = try? JSONEncoder().encode(data) else { return }
+        let fm = FileManager.default
+        // Copie de secours AVANT d'ecraser : si une future lecture echoue
+        // (corruption), la version precedente reste recuperable.
+        if fm.fileExists(atPath: libraryFile.path) {
+            try? fm.removeItem(at: libraryBackupFile)
+            try? fm.copyItem(at: libraryFile, to: libraryBackupFile)
         }
+        try? encoded.write(to: libraryFile, options: .atomic)
     }
 
     // MARK: - Import de fichiers

@@ -91,6 +91,17 @@ struct LibraryView: View {
             } message: {
                 Text(library.importErrors.joined(separator: "\n"))
             }
+            // Recuperation automatique de la bibliotheque (copie de secours
+            // ou reconstruction) : l'utilisateur est informe, pas mis devant
+            // une bibliotheque vide sans explication.
+            .alert("Bibliothèque récupérée", isPresented: Binding(
+                get: { library.startupNotice != nil },
+                set: { if !$0 { library.startupNotice = nil } }
+            )) {
+                Button("OK", role: .cancel) { library.startupNotice = nil }
+            } message: {
+                Text(library.startupNotice ?? "")
+            }
             .safeAreaInset(edge: .bottom) {
                 // Espace pour ne pas masquer la derniere ligne sous le mini-lecteur.
                 if engine.currentTrack != nil { Color.clear.frame(height: 64) }

@@ -121,6 +121,35 @@ final class LumeTests: XCTestCase {
         XCTAssertNil(LRCParser.parse("Des paroles\nsans aucun\nhorodatage\nsur quatre lignes"))
     }
 
+    // MARK: - Decodage tolerant (protection contre la perte de bibliotheque)
+
+    func testTrackDecodingToleratesMissingFields() throws {
+        let json = Data(#"{"fileName":"a.m4a","title":"Titre"}"#.utf8)
+        let t = try JSONDecoder().decode(Track.self, from: json)
+        XCTAssertEqual(t.fileName, "a.m4a")
+        XCTAssertEqual(t.title, "Titre")
+        XCTAssertEqual(t.artist, "Artiste inconnu")
+        XCTAssertEqual(t.duration, 0)
+        XCTAssertFalse(t.isFavorite)
+    }
+
+    func testTrackDecodingRoundTrip() throws {
+        let original = makeTrack(title: "Run This Town", artist: "JAY-Z", isFavorite: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Track.self, from: data)
+        XCTAssertEqual(decoded.id, original.id)
+        XCTAssertEqual(decoded.title, original.title)
+        XCTAssertEqual(decoded.artist, original.artist)
+        XCTAssertTrue(decoded.isFavorite)
+    }
+
+    func testPlaylistDecodingToleratesMissingFields() throws {
+        let json = Data(#"{"name":"Ma playlist"}"#.utf8)
+        let p = try JSONDecoder().decode(Playlist.self, from: json)
+        XCTAssertEqual(p.name, "Ma playlist")
+        XCTAssertTrue(p.trackIDs.isEmpty)
+    }
+
     // MARK: - Fusion des doublons (LibraryStore)
 
     func testRemoveDuplicatesMergesAndRemaps() {
